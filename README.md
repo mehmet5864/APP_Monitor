@@ -13,6 +13,14 @@ Uygulama izleme ve performans ölçme (APM) platformunun çalışan ilk iskeleti
 | Topoloji | Asset'ler düğüm, `topology_edges` tablosu yönlü kenarlardır; etki ve bağımlılık sorguları PostgreSQL özyinelemeli CTE ile çalışır (eklenti gerekmez). Haritada sağlıksız asset'lerin olası kök nedeni vurgulanır. |
 | Toplama | Önce agent'sız: sunucu tarafı probe'lar (HTTP, TCP, PostgreSQL) ve OpenTelemetry (OTLP/HTTP). Agent yalnızca ana makine metrikleri için, tek dosyalık ve bağımlılıksız. |
 
+## Kurulum (tek komut)
+
+Gereksinim: Docker (Windows'ta Docker Desktop, Linux'ta Docker Engine + compose eklentisi).
+
+- **Windows:** `kur.bat` dosyasına çift tıklayın. `.env` yoksa rastgele parola ve giriş anahtarıyla oluşturur, sistemi başlatır, tarayıcıyı açar ve giriş anahtarını yazar.
+- **Linux:** `chmod +x *.sh && ./kur.sh`. Docker yoksa resmi betikle kurmayı önerir; `.env`'yi (izinleri 600) oluşturur, sistemi başlatır, adresi ve giriş anahtarını yazar. Sonraki işlemler: `./guncelle.sh` (yeni kod, veriler korunur), `./durdur.sh` (`--sil` verileri de siler).
+- Elle kurulum için `.env.example` dosyasını `.env` olarak kopyalayıp değerleri değiştirin. `.env` Git'e eklenmez.
+
 ## Hızlı başlangıç (Docker Desktop)
 
 1. `.env` dosyasındaki `POSTGRES_PASSWORD` ve `APM_ADMIN_KEY` değerlerini değiştirin.
