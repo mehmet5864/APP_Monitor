@@ -680,18 +680,37 @@
     const msg = h('p', { class: 'msg', role: 'status' });
     const out = h('div');
 
+    let preAuth = null;
     function idle() {
+      preAuth = null;
       const url = h('input', { id: 'rec-url', placeholder: 'http://host.docker.internal:43130/', value: '' });
       const start = h('button', { type: 'submit', class: 'primary' }, 'Kaydı başlat');
-      const f = h('form', { class: 'inline' }, field('Başlangıç adresi', url), start);
+      const aOn = h('input', { id: 'ra-on', type: 'checkbox' });
+      const aUser = h('input', { id: 'ra-user', autocomplete: 'off', maxlength: '300' });
+      const aPass = h('input', { id: 'ra-pass', type: 'password', autocomplete: 'new-password', maxlength: '300' });
+      const aText = h('input', { id: 'ra-text', maxlength: '200', placeholder: 'ör. Çıkış yap' });
+      const aSel = ['ra-usel', 'ra-psel', 'ra-ssel'].map((id, i) => h('input', { id, placeholder: ['ör. #email', 'ör. input[name=pw]', 'ör. button[type=submit]'][i] }));
+      const aBody = h('div', { class: 'stack', hidden: true },
+        h('p', { class: 'muted small' }, 'Giriş, kayıt başlamadan önce APP_MON tarafından yapılır ve kayda adım olarak eklenmez; kayıt oturum açılmış sayfadan başlar. Senaryo kaydedilirken aynı bilgiler otomatik giriş olarak saklanır (parola veritabanında düz metindir; mümkünse yetkisi sınırlı bir test kullanıcısı kullanın).'),
+        h('div', { class: 'inline' }, field('Kullanıcı adı', aUser), field('Parola', aPass), field('Girişliyken görünen metin (isteğe bağlı)', aText)),
+        h('details', { class: 'adv' }, h('summary', null, 'Alan seçicileri (otomatik bulunamazsa)'),
+          h('div', { class: 'inline' }, field('Kullanıcı adı alanı (CSS)', aSel[0]), field('Parola alanı (CSS)', aSel[1]), field('Giriş düğmesi (CSS)', aSel[2]))));
+      aOn.addEventListener('change', () => { aBody.hidden = !aOn.checked; aUser.required = aPass.required = aOn.checked; });
+      const f = h('form', { class: 'stack' }, h('div', { class: 'inline' }, field('Başlangıç adresi', url), start),
+        h('label', { class: 'check' }, aOn, 'Bu sistemde kimlik doğrulama (giriş) var'), aBody);
       f.addEventListener('submit', async (e) => {
         e.preventDefault();
-        msg.className = 'msg'; msg.textContent = 'Tarayıcı açılıyor…'; start.disabled = true;
+        msg.className = 'msg'; msg.textContent = aOn.checked ? 'Tarayıcı açılıyor ve giriş yapılıyor…' : 'Tarayıcı açılıyor…'; start.disabled = true;
         try {
-          const r = await api('/api/recorder', { method: 'POST', body: { url: url.value.trim() } });
+          const body = { url: url.value.trim() };
+          if (aOn.checked) {
+            body.auth = { username: aUser.value, password: aPass.value, logged_in_text: aText.value, user_selector: aSel[0].value.trim(), pass_selector: aSel[1].value.trim(), submit_selector: aSel[2].value.trim() };
+            preAuth = { ...body.auth, check_url: body.url };
+          }
+          const r = await api('/api/recorder', { method: 'POST', body });
           msg.textContent = '';
           recording(r.id, r.width, r.height);
-        } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; start.disabled = false; }
+        } catch (err) { preAuth = null; msg.className = 'msg error'; msg.textContent = err.message; start.disabled = false; }
       });
       root.replaceChildren(f, msg, out);
     }
@@ -824,6 +843,13 @@
         $('#au-steps', authPanel).hidden = mode !== 'steps';
         for (const w of rowsBox.querySelectorAll('.r-loginwrap')) w.hidden = !(on && mode === 'steps');
       };
+      if (preAuth) {
+        $('#au-on', authPanel).checked = true;
+        $('#au-check', authPanel).value = preAuth.check_url || ''; $('#au-text', authPanel).value = preAuth.logged_in_text || '';
+        $('#au-user', authPanel).value = preAuth.username; $('#au-pass', authPanel).value = preAuth.password;
+        $('#au-usel', authPanel).value = preAuth.user_selector || ''; $('#au-psel', authPanel).value = preAuth.pass_selector || ''; $('#au-ssel', authPanel).value = preAuth.submit_selector || '';
+        syncAuth();
+      }
       const markSuggested = () => { for (const row of rowsBox.querySelectorAll('.step')) $('.r-login', row).checked = suggested.has(row._st); };
       const f = h('form', { class: 'stack' },
         h('div', { class: 'inline' },
@@ -965,14 +991,31 @@
           h('td', { class: 'small' }, r.error || (r.steps || []).map((x) => x.name + ' ' + fmt(x.ms) + ' ms').join(' → ') + ((r.steps || []).some((x) => (x.added || []).length + (x.removed || []).length) ? ' · sayfa değişti' : '')))), 'Henüz çalıştırma yok.'),
         sc.kind === 'browser' ? h('p', { class: 'muted small' }, 'Adım ayrıntısı, ekran görüntüsü ve değişiklikler için bir çalıştırmaya tıklayın.') : null, runDetail));
     };
+    const retryForm = (sc) => {
+      const u = h('input', { autocomplete: 'off', maxlength: '300', value: (sc.auth && sc.auth.username) || '' });
+      const p = h('input', { type: 'password', autocomplete: 'new-password', maxlength: '300', placeholder: 'yeni parola' });
+      const go = async (withNew) => {
+        msg.className = 'msg'; msg.textContent = '';
+        const body = withNew ? { username: u.value, password: p.value } : {};
+        if (withNew && (!u.value || !p.value)) { msg.className = 'msg error'; msg.textContent = 'Kullanıcı adı ve parola birlikte girilmeli.'; return; }
+        try { await api('/api/scenarios/' + sc.id + '/retry-login', { method: 'POST', body }); render(); } catch (x) { msg.className = 'msg error'; msg.textContent = x.message; }
+      };
+      out.replaceChildren(h('div', { class: 'panel stack' }, h('h3', null, 'Girişi yeniden dene: ' + sc.name),
+        h('p', { class: 'muted small' }, 'Hesabın kilitlenmemesi için otomatik giriş durduruldu. Parolayı site tarafında doğruladıktan sonra yeni bilgileri girin; giriş yeniden etkinleşir ve bir sonraki çalıştırmada denenir.'),
+        h('div', { class: 'inline' }, field('Kullanıcı adı', u), field('Yeni parola', p)),
+        h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => go(true) }, 'Kaydet ve yeniden etkinleştir'), h('button', { type: 'button', onclick: () => go(false) }, 'Bilgileri değiştirmeden yeniden dene'))));
+      out.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
     const rows = list.map((sc) => h('tr', { class: 'click', onclick: () => showRuns(sc).catch((x) => { msg.className = 'msg error'; msg.textContent = x.message; }) },
-      h('td', null, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'), sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'Sayfa değişti ' + ago(sc.last_changed_at))] : null, h('div', { class: 'muted small' }, sc.asset)),
+      h('td', null, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'), sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'Sayfa değişti ' + ago(sc.last_changed_at))] : null,
+        sc.auth && sc.auth.blocked ? [' ', pill('down', 'Giriş durduruldu')] : sc.auth && sc.auth.login_fails ? [' ', pill('warning', `Giriş hatası ${sc.auth.login_fails}/3`)] : null, h('div', { class: 'muted small' }, sc.asset)),
       h('td', { class: 'small' }, sc.steps.map((st, i) => h('div', null, (i + 1) + '. ' + st.method + ' ' + st.name))),
       h('td', { class: 'mono' }, sc.interval_sec + ' sn'),
       h('td', { class: 'mono small' }, ago(sc.last_run)),
       h('td', null, sc.last_ok == null ? pill('unknown', 'Bekliyor') : sc.last_ok ? pill('up', 'Başarılı') : h('span', { class: 'error small' }, sc.last_error || 'Başarısız'),
         sc.last_duration_ms != null ? h('div', { class: 'mono small muted' }, fmt(sc.last_duration_ms) + ' ms') : null),
       h('td', null, h('span', { class: 'row' },
+        sc.auth && sc.auth.blocked ? h('button', { type: 'button', class: 'primary', onclick: (ev) => { ev.stopPropagation(); retryForm(sc); } }, 'Girişi yeniden dene') : null,
         h('button', { type: 'button', onclick: async (ev) => { ev.stopPropagation(); ev.target.disabled = true; msg.className = 'msg'; msg.textContent = 'Çalıştırılıyor…';
           try { const res = await api('/api/scenarios/' + sc.id + '/run', { method: 'POST' }); msg.textContent = ''; out.replaceChildren(stepResults(res)); showRuns(sc); }
           catch (x) { msg.className = 'msg error'; msg.textContent = x.message; } ev.target.disabled = false; } }, 'Şimdi çalıştır'),

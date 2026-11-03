@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -235,6 +236,49 @@ func sumMS(outs []stepOut) time.Duration {
 	return time.Duration(t * float64(time.Millisecond))
 }
 
+// maxLoginFails art arda bu kadar başarısız otomatik girişten sonra giriş durdurulur (hesap kilitlenmesini önlemek için).
+const maxLoginFails = 3
+
+// ackLoginBlock yeni giriş bilgisi (isteğe bağlı) kaydeder ve durdurulmuş girişi yeniden etkinleştirir.
+func (s *Server) retryLogin(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	var raw []byte
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT auth FROM scenarios WHERE id = $1 AND tenant_id = $2`, id, a.TenantID).Scan(&raw); err != nil {
+		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	var au browser.Auth
+	if json.Unmarshal(raw, &au) != nil || !au.Enabled {
+		fail(w, 400, "bu senaryoda kimlik doğrulama yok")
+		return
+	}
+	if req.Username != "" || req.Password != "" {
+		if req.Username == "" || req.Password == "" || au.Mode != "form" {
+			fail(w, 400, "kullanıcı adı ve parola birlikte girilmeli (yalnızca form girişinde güncellenebilir)")
+			return
+		}
+		au.Username, au.Password = req.Username, req.Password
+	}
+	nb, _ := json.Marshal(au)
+	if _, err := s.DB.ExecContext(r.Context(), `UPDATE scenarios SET auth = $1, session = NULL, login_fails = 0, auth_blocked = false WHERE id = $2 AND tenant_id = $3`, string(nb), id, a.TenantID); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "scenario.retry_login", strconv.FormatInt(id, 10))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) executeBrowser(ctx context.Context, sc scenarioRow, maxDur time.Duration) ([]stepOut, bool, time.Duration, string) {
 	fin := func(outs []stepOut, ok bool, dur time.Duration, msg string, bx *browserExtra) ([]stepOut, bool, time.Duration, string) {
 		s.recordScenario(ctx, sc, outs, ok, dur, msg, bx)
@@ -256,9 +300,14 @@ func (s *Server) executeBrowser(ctx context.Context, sc scenarioRow, maxDur time
 	var auth *browser.Auth
 	var cookies []browser.Cookie
 	var authRaw, sessRaw []byte
-	if err := s.DB.QueryRowContext(ctx, `SELECT auth, session FROM scenarios WHERE id = $1`, sc.id).Scan(&authRaw, &sessRaw); err == nil {
+	var loginFails int
+	var blocked bool
+	if err := s.DB.QueryRowContext(ctx, `SELECT auth, session, login_fails, auth_blocked FROM scenarios WHERE id = $1`, sc.id).Scan(&authRaw, &sessRaw, &loginFails, &blocked); err == nil {
 		var au browser.Auth
 		if json.Unmarshal(authRaw, &au) == nil && au.Enabled {
+			if blocked { // hesabı kilitlememek için siteye hiç dokunma
+				return fin(nil, false, 0, "Giriş bilgileri hatalı: otomatik giriş durduruldu (hesap kilitlenmesin diye). Senaryo sayfasından kullanıcı adı/parolayı güncelleyip \"Girişi yeniden dene\" deyin.", nil)
+			}
 			auth = &au
 			total *= 2 // oturum düşmüşse bir kez yeniden giriş denenir
 			json.Unmarshal(sessRaw, &cookies)
@@ -301,6 +350,22 @@ func (s *Server) executeBrowser(ctx context.Context, sc scenarioRow, maxDur time
 	errMsg := ""
 	if err != nil {
 		errMsg = browserError(sc.bsteps, err)
+	}
+	if auth != nil {
+		switch {
+		case res.LoginFailed:
+			// Sayaç atomik artırılır: aynı anda çalışan iki çalıştırma (zamanlayıcı + elle) birbirini ezmesin.
+			if err := s.DB.QueryRowContext(ctx, `UPDATE scenarios SET login_fails = login_fails + 1, auth_blocked = (login_fails + 1 >= $2) WHERE id = $1 RETURNING login_fails`, sc.id, maxLoginFails).Scan(&loginFails); err != nil {
+				loginFails = maxLoginFails
+			}
+			if loginFails >= maxLoginFails {
+				errMsg = fmt.Sprintf("Giriş bilgileri hatalı (%d başarısız deneme): otomatik giriş durduruldu, hesap kilitlenmesin diye yeniden denenmeyecek. Bilgileri güncelleyip \"Girişi yeniden dene\" deyin. Son hata: %s", loginFails, errMsg)
+			} else {
+				errMsg = fmt.Sprintf("Giriş başarısız (deneme %d/%d): %s", loginFails, maxLoginFails, errMsg)
+			}
+		case loginFails > 0 && res.Session != "":
+			s.DB.ExecContext(ctx, `UPDATE scenarios SET login_fails = 0 WHERE id = $1`, sc.id)
+		}
 	}
 	return fin(outs, err == nil, dur, errMsg, &browserExtra{res: res, changes: changes, prints: prev, flips: newFlips})
 }
@@ -356,13 +421,14 @@ func (s *Server) recorderStart(w http.ResponseWriter, r *http.Request, a Auth) {
 		return
 	}
 	var req struct {
-		URL string `json:"url"`
+		URL  string        `json:"url"`
+		Auth *browser.Auth `json:"auth"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(60 * time.Second))
-	sess, err := s.Browser.Start(r.Context(), a.TenantID, req.URL)
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(90 * time.Second))
+	sess, err := s.Browser.StartAuth(r.Context(), a.TenantID, req.URL, req.Auth)
 	if err != nil {
 		code := 400
 		if errors.Is(err, browser.ErrBusy) {
@@ -371,7 +437,7 @@ func (s *Server) recorderStart(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, code, err.Error())
 		return
 	}
-	s.audit(r.Context(), a.TenantID, a.Label, "recorder.start", "")
+	s.audit(r.Context(), a.TenantID, a.Label, "recorder.start", map[bool]string{true: "kimlik doğrulamalı", false: ""}[req.Auth != nil])
 	writeJSON(w, 201, map[string]any{"id": sess.ID, "width": browser.ViewW, "height": browser.ViewH})
 }
 

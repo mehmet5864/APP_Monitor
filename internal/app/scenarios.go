@@ -240,7 +240,7 @@ func stepSummary(steps []scenario.Step) []map[string]any {
 func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 	rows, err := s.DB.QueryContext(r.Context(),
 		`SELECT sc.id, sc.asset_id, a.name, sc.name, sc.interval_sec, sc.timeout_ms, sc.enabled, sc.verify_tls, sc.vars, sc.steps,
-		        sc.last_run, sc.last_ok, sc.last_error, sc.last_duration_ms, sc.kind, sc.last_changed_at, sc.auth, sc.session_at
+		        sc.last_run, sc.last_ok, sc.last_error, sc.last_duration_ms, sc.kind, sc.last_changed_at, sc.auth, sc.session_at, sc.login_fails, sc.auth_blocked
 		 FROM scenarios sc JOIN assets a ON a.id = sc.asset_id WHERE sc.tenant_id = $1 ORDER BY a.name, sc.id`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
@@ -260,7 +260,9 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 		var kind string
 		var changedAt, sessionAt sql.NullTime
 		var authRaw []byte
-		if rows.Scan(&id, &assetID, &asset, &name, &interval, &timeout, &enabled, &verify, &varsRaw, &stepsRaw, &lastRun, &lastOK, &lastErr, &lastDur, &kind, &changedAt, &authRaw, &sessionAt) != nil {
+		var loginFails int
+		var authBlocked bool
+		if rows.Scan(&id, &assetID, &asset, &name, &interval, &timeout, &enabled, &verify, &varsRaw, &stepsRaw, &lastRun, &lastOK, &lastErr, &lastDur, &kind, &changedAt, &authRaw, &sessionAt, &loginFails, &authBlocked) != nil {
 			continue
 		}
 		var vars map[string]string
@@ -294,6 +296,7 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 			if sessionAt.Valid {
 				sum["session_at"] = sessionAt.Time
 			}
+			sum["login_fails"], sum["blocked"] = loginFails, authBlocked
 			it["auth"] = sum
 		}
 		if lastRun.Valid {

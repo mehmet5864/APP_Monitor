@@ -224,3 +224,11 @@ web/static/        arayüz (derleme gerektirmeyen HTML/CSS/JS)
 ## Topoloji: bağlantı değiştirme ve silme
 
 Topoloji sayfasındaki **Bağlantılar** tablosunda elle tanımlanmış her bağlantı için **Değiştir** (kaynak, ilişki, hedef; `PUT /api/topology/edges/{id}`) ve **Sil** düğmeleri bulunur. Otomatik (dış servis) bağlantılar değiştirilemez.
+
+## Tarayıcıdan kayıtta kimlik doğrulama
+
+"Tarayıcıdan kaydet" başlangıcında **Bu sistemde kimlik doğrulama (giriş) var** seçilip kullanıcı adı ve parola girilirse APP_MON girişi kayıt başlamadan kendisi yapar; giriş **kayda adım olarak eklenmez**, kayıt oturum açılmış sayfadan başlar. Parola yanlışsa kayıt başlamaz ve hata gösterilir. Senaryo kaydedilirken bu bilgiler otomatik giriş ayarı olarak önceden doldurulur (oturum geçerliyse giriş atlanır, düşmüşse yeniden yapılır).
+
+## Hesap kilitlenmesine karşı giriş koruması
+
+Otomatik giriş (form modu) art arda **3 kez** başarısız olursa (kullanıcı adı/parola hatalı, giriş sayfası hata veriyor, giriş tamamlanmıyor) APP_MON girişi **durdurur**: senaryo "Giriş bilgileri hatalı" hatasıyla başarısız görünür (alarm üretir) ve siteye bir daha giriş denemesi yapılmaz. Başarılı bir giriş (veya geçerli oturum) sayacı sıfırlar. Bir çalıştırmada en çok bir giriş denemesi yapılır. Parolayı değiştirdiyseniz Senaryolar sayfasında **Girişi yeniden dene** ile yeni bilgileri girin (`POST /api/scenarios/{id}/retry-login`); sayaç sıfırlanır. Kayıt başlatırken ve "Dene" butonunda tek deneme yapılır, sayaç etkilenmez. Migrasyon 010.

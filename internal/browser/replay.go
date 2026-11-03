@@ -32,11 +32,12 @@ type StepResult struct {
 }
 
 type Result struct {
-	Steps    []StepResult
-	Hosts    map[string]HostStat
-	Duration time.Duration
-	Cookies  []Cookie // başarılı çalıştırma sonunda tarayıcıdaki oturum
-	Session  string   // "", "reused" (saklanan oturum geçerliydi) veya "login" (giriş yapıldı)
+	Steps       []StepResult
+	Hosts       map[string]HostStat
+	Duration    time.Duration
+	Cookies     []Cookie // başarılı çalıştırma sonunda tarayıcıdaki oturum
+	LoginFailed bool     // kimlik bilgileri gönderildi ama giriş tamamlanamadı (parola hatalı olabilir)
+	Session     string   // "", "reused" (saklanan oturum geçerliydi) veya "login" (giriş yapıldı)
 }
 
 func (o Options) authOn() bool { return o.Auth != nil && o.Auth.Enabled }
@@ -196,6 +197,7 @@ func authenticate(ctx context.Context, page *Page, steps []Step, vars map[string
 		r.Name = "Giriş yapıldı"
 		if a.Mode == "form" {
 			if err := page.formLogin(ctx, a, vars, o.StepTimeout); err != nil {
+				res.LoginFailed = true
 				return fail(err.Error())
 			}
 		} else {
@@ -204,6 +206,7 @@ func authenticate(ctx context.Context, page *Page, steps []Step, vars map[string
 					continue
 				}
 				if err := doStep(ctx, page, st, vars, o); err != nil {
+					res.LoginFailed = true
 					return fail(err.Error())
 				}
 				page.WaitIdle(ctx, time.Now(), 400*time.Millisecond, o.StepTimeout)
@@ -211,6 +214,7 @@ func authenticate(ctx context.Context, page *Page, steps []Step, vars map[string
 		}
 		page.WaitIdle(ctx, time.Now(), 500*time.Millisecond, o.StepTimeout)
 		if still, err := page.needsLogin(ctx, a); err != nil || still {
+			res.LoginFailed = true
 			return fail("giriş başarısız (kullanıcı adı/parola hatalı olabilir veya giriş tamamlanmadı)")
 		}
 	}

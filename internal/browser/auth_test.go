@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"appmon/internal/cdp"
 )
 
 // authSite: çerez tabanlı oturum. Oturum yoksa giriş formu, varsa panel gösterir.
@@ -168,4 +170,25 @@ func TestValidateAuth(t *testing.T) {
 	if err := ValidateAuth(nil, nil); err != nil {
 		t.Error(err)
 	}
+}
+
+func TestRecorderStartAuthLogsInUnrecorded(t *testing.T) {
+	needChrome(t)
+	srv := authSite()
+	defer srv.Close()
+	m := NewManager(cdp.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := m.StartAuth(ctx, 1, srv.URL+"/", &Auth{Username: "ali@x.test", Password: "yanlis"}); err == nil {
+		t.Fatal("yanlış parola reddedilmeliydi")
+	}
+	s, err := m.StartAuth(ctx, 1, srv.URL+"/", &Auth{Username: "ali@x.test", Password: "sifre-123", LoggedInText: "Hoş geldin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := s.State()
+	if len(st.Steps) != 1 || strings.Contains(strings.Join(st.Steps, "|"), "sifre") {
+		t.Fatalf("yalnızca başlangıç adımı beklenirdi: %v", st.Steps)
+	}
+	m.Stop(s.ID, 1)
 }

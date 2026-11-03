@@ -59,6 +59,15 @@ func newID() string {
 }
 
 func (m *Manager) Start(ctx context.Context, tenant int64, startURL string) (*Session, error) {
+	return m.StartAuth(ctx, tenant, startURL, nil)
+}
+
+// StartAuth kaydı başlatır; auth verilirse giriş, kayda eklenmeden önce otomatik yapılır (giriş adımı kaydedilmez,
+// kayıt oturum açılmış sayfadan başlar).
+func (m *Manager) StartAuth(ctx context.Context, tenant int64, startURL string, auth *Auth) (*Session, error) {
+	if auth != nil && (startURL == "" || auth.Username == "" || auth.Password == "") {
+		return nil, errors.New("kimlik doğrulama için başlangıç adresi, kullanıcı adı ve parola gerekir")
+	}
 	if startURL != "" {
 		if err := ValidURL(startURL); err != nil {
 			return nil, err
@@ -94,7 +103,15 @@ func (m *Manager) Start(ctx context.Context, tenant int64, startURL string) (*Se
 		return nil, err
 	}
 	s.startScreencast(bctx)
-	if startURL != "" {
+	if auth != nil {
+		a := *auth
+		a.Enabled, a.Mode = true, "form"
+		if err := s.loginUnrecorded(ctx, startURL, &a); err != nil {
+			m.remove(s)
+			b.Close()
+			return nil, err
+		}
+	} else if startURL != "" {
 		if err := s.Input(ctx, Input{Type: "goto", URL: startURL}); err != nil {
 			m.remove(s)
 			b.Close()
@@ -391,3 +408,43 @@ func (s *Session) Input(ctx context.Context, in Input) error {
 }
 
 func secretKey(v string) string { return strings.Trim(v, "{}") }
+
+// loginUnrecorded giriş sayfasını açar, gerekiyorsa formu doldurur ve kayıt başlangıç adımını oturum açılmış sayfa olarak ekler.
+func (s *Session) loginUnrecorded(ctx context.Context, startURL string, a *Auth) error {
+	if err := ValidURL(startURL); err != nil {
+		return err
+	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+	p := s.page
+	if err := p.Navigate(ctx, startURL); err != nil {
+		return err
+	}
+	p.WaitIdle(ctx, time.Now(), 500*time.Millisecond, 10*time.Second)
+	needs, err := p.needsLogin(ctx, a)
+	if err != nil {
+		return errors.New("sayfa denetlenemedi")
+	}
+	if needs {
+		if err := p.formLogin(ctx, a, map[string]string{}, 10*time.Second); err != nil {
+			return fmt.Errorf("giriş yapılamadı: %w", err)
+		}
+		p.WaitIdle(ctx, time.Now(), 500*time.Millisecond, 10*time.Second)
+		still, err := p.needsLogin(ctx, a)
+		for i := 0; err == nil && still && i < 10; i++ { // yönlendirme geç tamamlanabilir
+			time.Sleep(500 * time.Millisecond)
+			still, err = p.needsLogin(ctx, a)
+		}
+		if err != nil || still {
+			return errors.New("giriş başarısız (kullanıcı adı/parola hatalı olabilir veya alan seçicileri gerekebilir)")
+		}
+	}
+	cur := p.URL()
+	if cur == "" {
+		cur = startURL
+	}
+	s.add(Step{Name: "Aç: " + hostPath(cur), Action: "goto", URL: cur})
+	return nil
+}
