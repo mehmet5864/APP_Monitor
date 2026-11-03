@@ -236,7 +236,7 @@ func oneOf(v string, set ...string) bool {
 func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 	rows, err := s.DB.QueryContext(r.Context(),
 		`SELECT p.id, p.asset_id, a.name, p.type, p.target, p.interval_sec, p.timeout_ms, p.enabled, p.last_run, p.last_error,
-		        p.http_method, p.headers, p.expect_status, p.expect_text, p.verify_tls, p.follow_redirects
+		        p.http_method, p.headers, p.expect_status, p.expect_text, p.verify_tls, p.follow_redirects, p.options
 		 FROM probes p JOIN assets a ON a.id = p.asset_id WHERE p.tenant_id = $1 ORDER BY a.name, p.id`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
@@ -250,9 +250,9 @@ func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 		var interval, timeout int
 		var enabled, verify, follow bool
 		var last sql.NullTime
-		var headersRaw []byte
+		var headersRaw, optsRaw []byte
 		if rows.Scan(&id, &assetID, &asset, &typ, &target, &interval, &timeout, &enabled, &last, &lastErr,
-			&method, &headersRaw, &expStatus, &expText, &verify, &follow) != nil {
+			&method, &headersRaw, &expStatus, &expText, &verify, &follow, &optsRaw) != nil {
 			continue
 		}
 		it := map[string]any{"id": id, "asset_id": assetID, "asset": asset, "type": typ, "target": maskTarget(typ, target),
@@ -267,6 +267,15 @@ func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 			sort.Strings(names)
 			it["http_method"], it["expect_status"], it["expect_text"] = method, expStatus, expText
 			it["verify_tls"], it["follow_redirects"], it["header_names"] = verify, follow, names
+		}
+		if typ == "tls" {
+			it["verify_tls"] = verify
+		}
+		var po probe.Options
+		if json.Unmarshal(optsRaw, &po) == nil && typ != "http" && typ != "postgres" {
+			hasComm := po.Community != ""
+			po.Community = "" // topluluk adı gizlidir, listede gösterilmez
+			it["options"], it["has_community"] = po, hasComm
 		}
 		if last.Valid {
 			it["last_run"] = last.Time
@@ -309,9 +318,71 @@ func validateTarget(typ, target string) error {
 		if !strings.HasPrefix(target, "postgres://") && !strings.HasPrefix(target, "postgresql://") {
 			return errors.New("postgres hedefi postgres://kullanici:parola@host:5432/veritabani biçiminde olmalı")
 		}
+	case "icmp", "dns":
+		if !probe.ValidHost(target) {
+			return errors.New(typ + " hedefi geçerli bir ad veya IP olmalı (şema/port olmadan)")
+		}
+	case "snmp", "tls", "ntp":
+		host := target
+		if h, _, err := splitHostPort(target); err == nil {
+			host = h
+		}
+		if !probe.ValidHost(host) {
+			return errors.New(typ + " hedefi host veya host:port biçiminde olmalı")
+		}
+	case "udp":
+		if h, _, err := splitHostPort(target); err != nil || !probe.ValidHost(h) {
+			return errors.New("udp hedefi host:port biçiminde olmalı")
+		}
 	default:
-		return errors.New("type http, tcp veya postgres olmalı")
+		return errors.New("type " + strings.Join(probe.Types, ", ") + " olmalı")
 	}
+	return nil
+}
+
+// validateOptions türe özgü seçenekleri doğrular ve kullanılmayanları temizler.
+func validateOptions(typ string, o *probe.Options) error {
+	keep := probe.Options{}
+	switch typ {
+	case "icmp":
+		if o.Count < 0 || o.Count > 10 {
+			return errors.New("paket sayısı 1 ile 10 arasında olmalı")
+		}
+		keep.Count = o.Count
+	case "snmp":
+		if o.OID != "" && !probe.ValidOID(o.OID) {
+			return errors.New("OID 1.3.6.1.2.1.1.3.0 gibi noktalı sayılar olmalı")
+		}
+		if o.Version != "" && o.Version != "1" && o.Version != "2c" {
+			return errors.New("snmp_version 1 veya 2c olmalı")
+		}
+		if len(o.Community) > 100 {
+			return errors.New("topluluk adı en fazla 100 karakter olabilir")
+		}
+		keep = probe.Options{Community: o.Community, OID: o.OID, Version: o.Version, Expect: o.Expect}
+	case "dns":
+		switch strings.ToUpper(o.Record) {
+		case "", "A", "AAAA", "MX", "TXT", "CNAME", "NS":
+		default:
+			return errors.New("kayıt türü A, AAAA, MX, TXT, CNAME veya NS olmalı")
+		}
+		if o.Server != "" {
+			h := o.Server
+			if hh, _, err := splitHostPort(o.Server); err == nil {
+				h = hh
+			}
+			if !probe.ValidHost(strings.Trim(h, "[]")) {
+				return errors.New("DNS sunucusu host veya host:port olmalı")
+			}
+		}
+		keep = probe.Options{Server: o.Server, Record: strings.ToUpper(o.Record), Expect: o.Expect}
+	case "tcp", "udp":
+		keep = probe.Options{Send: o.Send, Expect: o.Expect}
+	}
+	if len(keep.Send) > 1024 || len(keep.Expect) > 200 {
+		return errors.New("gönderilecek metin en fazla 1024, beklenen metin en fazla 200 karakter olabilir")
+	}
+	*o = keep
 	return nil
 }
 
@@ -345,6 +416,7 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		ExpectText      string            `json:"expect_text"`
 		VerifyTLS       *bool             `json:"verify_tls"`
 		FollowRedirects *bool             `json:"follow_redirects"`
+		Options         probe.Options     `json:"options"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -353,6 +425,11 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if err := validateOptions(req.Type, &req.Options); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	optionsJSON, _ := json.Marshal(req.Options)
 	if req.Type == "http" {
 		req.HTTPMethod = strings.ToUpper(strings.TrimSpace(req.HTTPMethod))
 		if req.HTTPMethod == "" {
@@ -415,7 +492,7 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		kind := req.AssetKind
 		if kind == "" {
-			kind = map[string]string{"http": "url", "tcp": "service", "postgres": "database"}[req.Type]
+			kind = map[string]string{"http": "website", "tcp": "service", "postgres": "database", "icmp": "host", "snmp": "network", "dns": "service", "tls": "website", "udp": "service", "ntp": "service"}[req.Type]
 		}
 		if !validKind(kind) {
 			fail(w, 400, "asset_kind geçersiz")
@@ -443,10 +520,10 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	var id int64
 	if err := tx.QueryRowContext(r.Context(),
 		`INSERT INTO probes (tenant_id, asset_id, type, target, interval_sec, timeout_ms,
-		                     http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+		                     http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects, options)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
 		a.TenantID, assetID, req.Type, strings.TrimSpace(req.Target), req.IntervalSec, req.TimeoutMS,
-		req.HTTPMethod, string(headersJSON), req.Body, req.ExpectStatus, req.ExpectText, verifyTLS, follow).Scan(&id); err != nil {
+		req.HTTPMethod, string(headersJSON), req.Body, req.ExpectStatus, req.ExpectText, verifyTLS, follow, string(optionsJSON)).Scan(&id); err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
 	}

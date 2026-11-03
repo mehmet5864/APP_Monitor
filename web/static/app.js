@@ -157,9 +157,23 @@
 
   const hourLabel = (i) => { const d = new Date(Date.now() - (23 - i) * 3600e3); return String(d.getHours()).padStart(2, '0') + ':00'; };
 
+  // Sayıyı 0'dan hedefe sayarak gösterir (hareket azaltma tercihi açıksa doğrudan yazar).
+  function countUp(el, text) {
+    el.textContent = text;
+    const m = /^(\d+(?:\.\d+)?)(.*)$/.exec(text);
+    if (!m || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const target = parseFloat(m[1]), dec = (m[1].split('.')[1] || '').length, t0 = performance.now();
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / 800), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = (target * e).toFixed(dec) + m[2];
+      if (k < 1 && el.isConnected !== false) requestAnimationFrame(step); else el.textContent = text;
+    };
+    requestAnimationFrame(step);
+  }
   function kpi(label, value, sub, extra, tone) {
+    const kv = h('span', { class: 'kv' + (tone ? ' ' + tone : '') }); countUp(kv, value);
     return h('div', { class: 'panel kpi' }, h('span', { class: 'muted small' }, label),
-      h('span', { class: 'kv' + (tone ? ' ' + tone : '') }, value), h('span', { class: 'muted small' }, sub), extra || null);
+      kv, h('span', { class: 'muted small' }, sub), extra || null);
   }
 
   function miniLine(vals) {
@@ -185,7 +199,7 @@
     const flush = () => {
       if (seg.length > 1) {
         const line = seg.map((i, k) => `${k ? 'L' : 'M'}${x(i).toFixed(1)} ${y(vals[i]).toFixed(1)}`).join('');
-        svg.append(s('path', { class: 'area', d: `${line}L${x(seg[seg.length - 1]).toFixed(1)} ${y(lo)}L${x(seg[0]).toFixed(1)} ${y(lo)}Z` }), s('path', { class: 'line', d: line }));
+        svg.append(s('path', { class: 'area', d: `${line}L${x(seg[seg.length - 1]).toFixed(1)} ${y(lo)}L${x(seg[0]).toFixed(1)} ${y(lo)}Z` }), s('path', { class: 'line', d: line, pathLength: '1' }));
       }
       seg = [];
     };
@@ -221,7 +235,7 @@
       for (const [n, cls] of parts) {
         if (!n) continue;
         const hh = (n / max) * ih;
-        svg.append(s('rect', { class: cls, x: cx - bw / 2, y: yy - hh + 1, width: bw, height: Math.max(1, hh - 2), rx: 2 }));
+        { const bar = s('rect', { class: cls, x: cx - bw / 2, y: yy - hh + 1, width: bw, height: Math.max(1, hh - 2), rx: 2 }); bar.style.setProperty('--d', (i * 25) + 'ms'); svg.append(bar); }
         yy -= hh;
       }
       const hit = s('rect', { class: 'hit', x: L + slot * i, y: T, width: slot, height: ih });
@@ -239,6 +253,7 @@
       const x = W - (runs.length - i) * step + 1;
       const hh = r.ok ? 8 + (r.ms / mx) * (H - 10) : H - 2;
       const rect = s('rect', { class: r.ok ? 'tick-ok' : 'tick-bad', x, y: H - hh, width: step - 2.5, height: hh, rx: 1.5 });
+      rect.style.setProperty('--d', (i * 18) + 'ms');
       tip(rect, r.ok ? `Başarılı · ${Math.round(r.ms)} ms` : 'Başarısız');
       svg.append(rect);
     });
@@ -247,11 +262,57 @@
 
   function rankBars(items, unit) {
     const max = Math.max(1, ...items.map((i) => i.value));
-    return h('div', { class: 'rank' }, items.map((it) => {
-      const fill = h('span', { class: 'fill' }); fill.style.width = Math.max(2, (it.value / max) * 100) + '%';
+    return h('div', { class: 'rank' }, items.map((it, ix) => {
+      const fill = h('span', { class: 'fill' }); fill.style.setProperty('--d', (ix * 70) + 'ms'); fill.style.width = Math.max(2, (it.value / max) * 100) + '%';
       return h('div', { class: 'rk' }, h('span', { class: 'rk-name kl' }, it.kind ? kindIcon(it.kind, 30) : null, it.label),
         h('span', { class: 'track' }, fill), h('span', { class: 'rk-val mono' }, it.text || (fmt(it.value) + (unit || ''))));
     }));
+  }
+
+  // Kontrol edilen sayfaların küçültülmüş görüntüleri; çerçeve rengi durumu gösterir.
+  function showShot(url, title) {
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const ov = h('div', { class: 'lightbox', role: 'dialog', 'aria-label': title, onclick: close }, h('img', { src: url, alt: title }), h('p', null, title));
+    document.addEventListener('keydown', onKey);
+    document.body.append(ov);
+  }
+
+  function pageFrames(scenarios) {
+    const list = scenarios.filter((x) => x.kind === 'browser');
+    if (!list.length) return null;
+    const state = (sc) => {
+      if (sc.last_ok === false) return ['bad', 'Başarısız'];
+      if (sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5) return ['chg', 'Sayfa değişti'];
+      if (sc.last_ok === true) return ['ok', 'Sağlıklı'];
+      return ['wait', 'Bekliyor'];
+    };
+    const cards = list.map((sc) => {
+      const [cls, label] = state(sc);
+      const imgBox = h('div', { class: 'thumb-img' }, h('span', { class: 'muted small' }, sc.shot ? 'yükleniyor…' : 'görüntü yok'));
+      const card = h('div', { class: 'thumb ' + cls, tabindex: sc.shot ? '0' : null, role: sc.shot ? 'button' : null, 'aria-label': `${sc.name}, ${label}` }, imgBox,
+        h('div', { class: 'thumb-meta' }, h('b', null, sc.name), h('span', { class: 'muted small' }, sc.asset),
+          h('span', { class: 'row small' }, pill(cls === 'bad' ? 'down' : cls === 'chg' ? 'warning' : cls === 'ok' ? 'up' : 'unknown', label),
+            h('span', { class: 'mono muted' }, ago(sc.last_run))),
+          sc.last_ok === false && sc.last_error ? h('span', { class: 'error small' }, sc.last_error.slice(0, 90)) : null,
+          sc.last_ok === false && sc.shot ? h('span', { class: 'muted small' }, 'Görüntü son başarılı kontrolden: ' + ago(sc.shot.at)) : null));
+      if (sc.shot) {
+        fetch(`/api/scenarios/${sc.id}/runs/${sc.shot.run_id}/shots/${sc.shot.step}`, { headers: { 'X-API-Key': key } })
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('görüntü yok'))))
+          .then((b) => {
+            const url = URL.createObjectURL(b);
+            imgBox.replaceChildren(h('img', { src: url, alt: sc.name + ' sayfa görüntüsü', loading: 'lazy' }));
+            const open = () => showShot(url, `${sc.name} · ${label} · ${ago(sc.shot.at)}`);
+            card.addEventListener('click', open);
+            card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+          }).catch(() => imgBox.replaceChildren(h('span', { class: 'muted small' }, 'görüntü yüklenemedi')));
+      }
+      return card;
+    });
+    return h('section', null, h('h3', null, 'Kontrol edilen sayfalar'),
+      h('div', { class: 'legend' }, h('span', { class: 'lg up' }, 'Sağlıklı'), h('span', { class: 'lg warn' }, 'Sayfa değişti (24 sa)'), h('span', { class: 'lg down' }, 'Başarısız'), h('span', { class: 'lg unknown' }, 'Bekliyor')),
+      h('div', { class: 'thumbs' }, cards),
+      h('p', { class: 'muted small' }, 'Görüntü, tarayıcı senaryolarının son kontrolündeki sayfadır (yalnızca son 10 çalıştırma saklanır). Büyütmek için tıklayın.'));
   }
 
   async function viewGenel() {
@@ -321,6 +382,7 @@
           h('details', { class: 'adv' }, h('summary', null, 'Tablo olarak göster'), table(['Saat', 'Kritik', 'Diğer'], alertRows, '')))),
         h('section', null, h('h3', null, 'En yavaş hedefler · son 1 saat'), h('div', { class: 'panel' },
           d.slowest.length ? rankBars(d.slowest.map((x) => ({ kind: x.kind, label: x.asset, value: x.avg_ms, text: `${fmt(x.avg_ms)} ms (en yüksek ${fmt(x.max_ms)})` })), ' ms') : h('p', { class: 'muted' }, 'Henüz probe gecikmesi verisi yok.')))),
+      pageFrames(d.scenarios),
       scen ? h('section', null, h('h3', null, 'Senaryo sağlığı'), scen) : null,
       h('section', null, h('h3', null, 'Açık alarmlar'), alertTable(alerts, false)));
   }
@@ -414,6 +476,32 @@
     return o.join(' · ');
   }
 
+  const PROBE_TYPES = [['http', 'HTTP / HTTPS'], ['tcp', 'TCP bağlantı'], ['icmp', 'ICMP (ping)'], ['snmp', 'SNMP (v1/v2c)'], ['dns', 'DNS sorgusu'],
+    ['tls', 'TLS sertifikası (süre)'], ['udp', 'UDP'], ['ntp', 'NTP (saat sapması)'], ['postgres', 'PostgreSQL']];
+  const PROBE_HINTS = { http: 'https://ornek.com/health', tcp: 'sunucu.ornek.com:5432', icmp: '10.0.0.1 veya sunucu.ornek.com', snmp: '10.0.0.1 veya 10.0.0.1:161',
+    dns: 'ornek.com', tls: 'ornek.com veya ornek.com:8443', udp: 'sunucu.ornek.com:514', ntp: 'pool.ntp.org',
+    postgres: 'postgres://kullanici:parola@host:5432/veritabani?sslmode=disable' };
+  const PROBE_HELP = { icmp: 'Paket kaybı % ve ortalama RTT ölçülür. Konteynerde ayrıcalıksız ICMP için sysctl gerekir (docker-compose.yml içinde ayarlı).',
+    snmp: 'Topluluk adı gizli saklanır ve listede gösterilmez. SNMPv3 desteklenmez. Sayısal değer "probe.snmp_value" metriği olur.',
+    dns: 'Çözümleme süresi ölçülür; "Beklenen" doluysa yanıtta aranır. Özel DNS sunucusu verebilirsiniz.',
+    tls: 'Sertifikanın kalan gün sayısı "probe.cert_days_left" metriği olur (alarm kuralı: Sertifika süresi doluyor).',
+    udp: 'UDP bağlantısızdır: yanıt gelirse başarılı sayılır. Yanıt vermeyen servisler için uygun değildir.',
+    ntp: 'Sunucu saatinden sapma (ms) "probe.ntp_offset_ms" metriği olur.',
+    tcp: 'İsteğe bağlı: bağlanınca metin gönderip yanıtta metin arayabilirsiniz (ör. SSH- banner\'ı, Redis PING).' };
+  const SNMP_OIDS = [['1.3.6.1.2.1.1.3.0', 'sysUpTime'], ['1.3.6.1.2.1.1.1.0', 'sysDescr'], ['1.3.6.1.2.1.1.5.0', 'sysName'], ['1.3.6.1.2.1.2.1.0', 'ifNumber (arayüz sayısı)'], ['1.3.6.1.2.1.25.3.3.1.2.1', 'hrProcessorLoad (CPU %)']];
+
+  function optSummary(p) {
+    const o = p.options || {}, r = [];
+    if (o.count) r.push(o.count + ' paket');
+    if (p.type === 'snmp') r.push('OID ' + (o.oid || '1.3.6.1.2.1.1.3.0'), 'v' + (o.snmp_version || '2c'), p.has_community ? 'topluluk gizli' : 'topluluk: public');
+    if (o.record) r.push(o.record + ' kaydı');
+    if (o.server) r.push('sunucu ' + o.server);
+    if (o.send) r.push('gönderir');
+    if (o.expect) r.push('metin aranır');
+    if (p.type === 'tls' && p.verify_tls === false) r.push('doğrulama kapalı');
+    return r.join(' · ');
+  }
+
   async function viewProbelar() {
     await refreshHeader();
     const probes = await api('/api/probes');
@@ -421,7 +509,7 @@
     const f = h('form', { class: 'inline', id: 'probe-form' },
       field('Asset adı', h('input', { id: 'p-asset', required: true, maxlength: '200', placeholder: 'ör. odeme-servisi' })),
       field('Dil (isteğe bağlı)', select('p-lang', Object.entries(LANG).map(([k, v]) => [k, k === 'none' ? 'Belirtilmedi' : v]))),
-      field('Probe türü', select('p-type', [['http', 'HTTP'], ['tcp', 'TCP'], ['postgres', 'PostgreSQL']])),
+      field('Probe türü', select('p-type', PROBE_TYPES.map(([k, l]) => [k, l]))),
       field('Asset türü (topoloji şekli)', select('p-kind', KIND_AUTO)),
       field('Hedef', h('input', { id: 'p-target', required: true, placeholder: 'https://ornek.com/health' })),
       field('Aralık (sn)', h('input', { id: 'p-interval', type: 'number', min: '5', value: '30' })),
@@ -439,11 +527,36 @@
         h('label', { class: 'check' }, h('input', { id: 'p-redir', type: 'checkbox', checked: true }), 'Yönlendirmeleri izle')));
     f.insertBefore(adv, f.lastChild);
     adv.style.gridColumn = '1 / -1';
-    const hints = { http: 'https://ornek.com/health', tcp: 'sunucu.ornek.com:5432', postgres: 'postgres://kullanici:parola@host:5432/veritabani?sslmode=disable' };
-    $('#p-type', f).addEventListener('change', (e) => {
-      $('#p-target', f).placeholder = hints[e.target.value];
-      adv.hidden = e.target.value !== 'http';
-    });
+    // Türe özgü seçenekler: her alan hangi türlerde görüneceğini 'types' ile belirtir.
+    const optFields = [
+      ['icmp', field('Paket sayısı', h('input', { id: 'o-count', type: 'number', min: '1', max: '10', value: '3' }))],
+      ['snmp', field('Topluluk adı', h('input', { id: 'o-comm', type: 'password', autocomplete: 'off', placeholder: 'public' }))],
+      ['snmp', field('OID', h('input', { id: 'o-oid', list: 'o-oids', placeholder: '1.3.6.1.2.1.1.3.0' })), h('datalist', { id: 'o-oids' }, SNMP_OIDS.map(([v, l]) => h('option', { value: v }, l)))],
+      ['snmp', field('Sürüm', select('o-ver', [['2c', 'v2c'], ['1', 'v1']]))],
+      ['dns', field('Kayıt türü', select('o-rec', ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS'].map((x) => [x, x])))],
+      ['dns', field('DNS sunucusu (isteğe bağlı)', h('input', { id: 'o-srv', placeholder: '8.8.8.8 veya 10.0.0.53:53' }))],
+      ['tcp udp', field('Gönderilecek metin (\\r \\n kullanılabilir)', h('input', { id: 'o-send', maxlength: '1024', placeholder: 'PING\\r\\n' }))],
+      ['tcp udp snmp dns', field('Yanıtta aranacak metin', h('input', { id: 'o-expect', maxlength: '200', placeholder: '+PONG' }))],
+    ];
+    const optBox = h('div', { class: 'inline', style: null });
+    optBox.style.gridColumn = '1 / -1';
+    const optItems = optFields.map(([types, ...els]) => ({ types: types.split(' '), els }));
+    optItems.forEach((it) => it.els.forEach((e) => optBox.append(e)));
+    const help = h('p', { class: 'muted small' });
+    help.style.gridColumn = '1 / -1';
+    const tlsBox = h('label', { class: 'check' }, h('input', { id: 'o-tlsverify', type: 'checkbox', checked: true }), 'Sertifika zincirini doğrula (kapalıysa yalnızca kalan gün ölçülür)');
+    f.insertBefore(optBox, adv); f.insertBefore(help, adv); f.insertBefore(tlsBox, adv);
+    const syncType = () => {
+      const t = $('#p-type', f).value;
+      $('#p-target', f).placeholder = PROBE_HINTS[t];
+      adv.hidden = t !== 'http';
+      for (const it of optItems) it.els.forEach((e) => { e.hidden = !it.types.includes(t); });
+      optBox.hidden = !optItems.some((it) => it.types.includes(t));
+      tlsBox.hidden = t !== 'tls';
+      help.textContent = PROBE_HELP[t] || ''; help.hidden = !PROBE_HELP[t];
+    };
+    $('#p-type', f).addEventListener('change', syncType);
+    syncType();
     f.addEventListener('submit', async (e) => {
       e.preventDefault();
       msg.className = 'msg'; msg.textContent = '';
@@ -458,19 +571,27 @@
             headers: parseHeaders($('#p-headers', f).value), body: $('#p-body', f).value,
             verify_tls: $('#p-tls', f).checked, follow_redirects: $('#p-redir', f).checked });
         }
+        const t = body.type, o = {}, val = (id) => $(id, f).value.trim();
+        if (t === 'icmp') o.count = Number(val('#o-count')) || 3;
+        if (t === 'snmp') Object.assign(o, { community: $('#o-comm', f).value, oid: val('#o-oid'), snmp_version: val('#o-ver') });
+        if (t === 'dns') Object.assign(o, { record: val('#o-rec'), server: val('#o-srv') });
+        if (t === 'tcp' || t === 'udp') o.send = $('#o-send', f).value;
+        if (['tcp', 'udp', 'snmp', 'dns'].includes(t)) o.expect = $('#o-expect', f).value;
+        if (t === 'tls') body.verify_tls = $('#o-tlsverify', f).checked;
+        body.options = o;
         await api('/api/probes', { method: 'POST', body });
         render();
       } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
     });
     const rows = probes.map((p) => h('tr', null,
       h('td', null, h('b', null, p.asset)), h('td', null, p.type.toUpperCase()),
-      h('td', { class: 'mono small' }, p.target, p.type === 'http' ? h('div', { class: 'muted' }, probeOpts(p)) : null), h('td', { class: 'mono' }, p.interval_sec + ' sn'),
+      h('td', { class: 'mono small' }, p.target, p.type === 'http' ? h('div', { class: 'muted' }, probeOpts(p)) : p.options ? h('div', { class: 'muted' }, optSummary(p)) : null), h('td', { class: 'mono' }, p.interval_sec + ' sn'),
       h('td', { class: 'mono small' }, ago(p.last_run)),
       h('td', null, !p.last_run ? pill('unknown', 'Bekliyor') : p.last_error ? h('span', { class: 'error small' }, p.last_error) : pill('up', 'Başarılı')),
       h('td', null, h('button', { type: 'button', class: 'danger', onclick: async () => { try { await api('/api/probes/' + p.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil'))));
     return h('div', { style: null },
       h('section', null, h('h2', null, 'Agent\'sız izleme (probe)'),
-        h('p', { class: 'muted' }, 'Sunucunuza hiçbir şey kurmadan HTTP, TCP ve PostgreSQL erişilebilirliğini ve gecikmesini izler. Yeni bir asset adı yazarsanız lisanstan bir asset düşer.'),
+        h('p', { class: 'muted' }, 'Sunucunuza hiçbir şey kurmadan HTTP, TCP, ICMP (ping), SNMP, DNS, TLS sertifikası, UDP, NTP ve PostgreSQL erişilebilirliğini ve gecikmesini izler. Yeni bir asset adı yazarsanız lisanstan bir asset düşer.'),
         h('p', { class: 'muted' }, 'APP_MON Docker içinde çalışıyorsa localhost konteynerin kendisidir. Windows veya Mac\'teki bir uygulamayı izlemek için localhost yerine host.docker.internal yazın (ör. host.docker.internal:43130).'),
         h('div', { class: 'panel' }, f, msg)),
       h('section', null, table(['Asset', 'Tür', 'Hedef', 'Aralık', 'Son çalışma', 'Son sonuç', ''], rows, 'Henüz probe tanımlanmadı.')));
@@ -851,6 +972,10 @@
       { name: 'Servis erişilemiyor', metric: 'probe.up', comparator: '<', threshold: 1, window_sec: 30, severity: 'critical', desc: 'Probe başarısız' },
       { name: 'Yavaş yanıt', metric: 'probe.latency_ms', comparator: '>', threshold: 1000, window_sec: 120, severity: 'warning', desc: 'Ortalama yanıt süresi 1 sn üzerinde' },
       { name: 'Çok yavaş yanıt', metric: 'probe.latency_ms', comparator: '>', threshold: 3000, window_sec: 120, severity: 'critical', desc: 'Ortalama yanıt süresi 3 sn üzerinde' },
+      { name: 'Paket kaybı', metric: 'probe.packet_loss_pct', comparator: '>', threshold: 20, window_sec: 300, severity: 'warning', desc: 'ICMP paket kaybı %20 üzerinde' },
+      { name: 'Sertifika süresi doluyor', metric: 'probe.cert_days_left', comparator: '<', threshold: 14, window_sec: 3600, severity: 'warning', desc: 'TLS sertifikasının bitimine 14 günden az' },
+      { name: 'Sertifika kritik', metric: 'probe.cert_days_left', comparator: '<', threshold: 3, window_sec: 3600, severity: 'critical', desc: 'TLS sertifikasının bitimine 3 günden az' },
+      { name: 'Saat sapması (NTP)', metric: 'probe.ntp_offset_ms', comparator: '>', threshold: 500, window_sec: 300, severity: 'warning', desc: 'NTP sunucusuna göre sapma 500 ms üzerinde' },
       { name: 'Aralıklı erişim sorunu', metric: 'probe.up', comparator: '<', threshold: 0.9, window_sec: 600, severity: 'warning', desc: '10 dk içinde başarı oranı %90 altında' }] },
     { group: 'Senaryo ve web sitesi', items: [
       { name: 'Senaryo başarısız', metric: 'scenario.up', comparator: '<', threshold: 1, window_sec: 60, severity: 'critical', desc: 'Senaryo bir adımda hata verdi' },
@@ -868,7 +993,7 @@
     const f = h('form', { class: 'inline' },
       field('Kural adı', h('input', { id: 'r-name', required: true, maxlength: '200' })),
       field('Metrik', h('input', { id: 'r-metric', required: true, placeholder: 'host.cpu_pct', maxlength: '128', list: 'r-metrics' })),
-      h('datalist', { id: 'r-metrics' }, ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct', 'probe.up', 'probe.latency_ms', 'scenario.up', 'scenario.duration_ms', 'scenario.changes'].map((m) => h('option', { value: m }))),
+      h('datalist', { id: 'r-metrics' }, ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct', 'probe.up', 'probe.latency_ms', 'probe.packet_loss_pct', 'probe.cert_days_left', 'probe.ntp_offset_ms', 'probe.snmp_value', 'probe.dns_answers', 'scenario.up', 'scenario.duration_ms', 'scenario.changes'].map((m) => h('option', { value: m }))),
       field('Koşul', select('r-cmp', [['>', 'büyükse (>)'], ['<', 'küçükse (<)']])),
       field('Eşik', h('input', { id: 'r-thr', type: 'number', step: 'any', required: true })),
       field('Pencere (sn)', h('input', { id: 'r-win', type: 'number', min: '10', value: '60' })),

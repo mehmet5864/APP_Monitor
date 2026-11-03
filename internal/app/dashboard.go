@@ -98,7 +98,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 	// Senaryo sağlık şeritleri: her senaryonun son 30 çalıştırması.
 	scs := []map[string]any{}
 	if rows, err := s.DB.QueryContext(ctx,
-		`SELECT sc.id, sc.name, a.name, sc.kind, sc.interval_sec, sc.last_changed_at,
+		`SELECT sc.id, sc.name, a.name, sc.kind, sc.interval_sec, sc.last_changed_at, sc.last_run, sc.last_ok, sc.last_error,
 		        (SELECT coalesce(json_agg(json_build_object('ok', x.ok, 'ms', round(x.duration_ms::numeric, 0)) ORDER BY x.id), '[]'::json)
 		         FROM (SELECT id, ok, duration_ms FROM scenario_runs WHERE scenario_id = sc.id ORDER BY id DESC LIMIT 30) x)
 		 FROM scenarios sc JOIN assets a ON a.id = sc.asset_id WHERE sc.tenant_id = $1 ORDER BY a.name, sc.name LIMIT 12`, t); err == nil {
@@ -106,12 +106,31 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 			var id int64
 			var name, asset, kind string
 			var interval int
-			var changed *time.Time
+			var changed, lastRun *time.Time
+			var lastOK *bool
+			var lastErr string
 			var runs []byte
-			if rows.Scan(&id, &name, &asset, &kind, &interval, &changed, &runs) == nil {
-				it := map[string]any{"id": id, "name": name, "asset": asset, "kind": kind, "interval_sec": interval, "runs": json.RawMessage(runs)}
+			if rows.Scan(&id, &name, &asset, &kind, &interval, &changed, &lastRun, &lastOK, &lastErr, &runs) == nil {
+				it := map[string]any{"id": id, "name": name, "asset": asset, "kind": kind, "interval_sec": interval, "runs": json.RawMessage(runs), "last_error": lastErr}
 				if changed != nil {
 					it["last_changed_at"] = *changed
+				}
+				if lastRun != nil {
+					it["last_run"] = *lastRun
+				}
+				if lastOK != nil {
+					it["last_ok"] = *lastOK
+				}
+				// Küçük resim: görüntüsü olan en son çalıştırmanın son adımı (başarısız çalıştırmada son sağlam görüntü).
+				if kind == "browser" {
+					var runID int64
+					var step int
+					var at time.Time
+					if s.DB.QueryRowContext(ctx,
+						`SELECT sh.run_id, max(sh.step_idx), max(r.at) FROM scenario_shots sh JOIN scenario_runs r ON r.id = sh.run_id
+						 WHERE r.scenario_id = $1 GROUP BY sh.run_id ORDER BY sh.run_id DESC LIMIT 1`, id).Scan(&runID, &step, &at) == nil {
+						it["shot"] = map[string]any{"run_id": runID, "step": step, "at": at}
+					}
 				}
 				scs = append(scs, it)
 			}

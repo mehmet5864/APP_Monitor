@@ -71,6 +71,22 @@ APM_SERVER=http://<sunucu>:8080 APM_KEY=<agent anahtarı> ./dist/appmon-agent
 
 Bu çıktı Linux (amd64) içindir. Başka platformlar için `GOOS`/`GOARCH` ile derleyin: `go build ./cmd/agent`. Linux dışında şimdilik yalnızca "agent çalışıyor" sinyali gönderilir; Windows ve macOS metrikleri eklenecek.
 
+## Probe türleri
+
+| Tür | Hedef | Ölçülen / ek metrik |
+|---|---|---|
+| `http` | URL | durum kodu, gecikme |
+| `tcp` | host:port | bağlantı; isteğe bağlı gönder/bekle (banner, Redis PING) |
+| `icmp` | host/IP | ortalama RTT, `probe.packet_loss_pct` (paket sayısı seçilebilir) |
+| `snmp` | host[:161] | v1/v2c GET; `probe.snmp_value` (sayısal OID); topluluk adı gizli saklanır; SNMPv3 yok |
+| `dns` | alan adı | çözümleme süresi; kayıt türü A/AAAA/MX/TXT/CNAME/NS, özel sunucu, beklenen yanıt; `probe.dns_answers` |
+| `tls` | host[:443] | el sıkışma; `probe.cert_days_left` (sertifika bitimine kalan gün) |
+| `udp` | host:port | gönder/yanıt bekle |
+| `ntp` | host[:123] | `probe.ntp_offset_ms` (saat sapması) |
+| `postgres` | bağlantı dizesi | `SELECT 1` |
+
+ICMP: sunucu kök olmadan çalıştığı için ayrıcalıksız ICMP soketi kullanılır; `docker-compose.yml` içindeki `net.ipv4.ping_group_range` ayarı bunu sağlar (ham soket için `NET_RAW` de olur). SaaS modunda tüm türler özel/yerel ağ adreslerine engellidir. Hazır alarm şablonları: paket kaybı, sertifika süresi, NTP sapması.
+
 ## Probe seçenekleri
 
 HTTP probe'ları için yöntem (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS), özel başlıklar, gövde, beklenen durum kodu (`200`, `200-299`, `200,204,301-302`; boşsa 200-399), yanıtta aranacak metin, TLS doğrulama ve yönlendirme izleme ayarlanabilir. Hata mesajlarına yanıt gövdesi veya adres yazılmaz.
@@ -109,6 +125,8 @@ HTTP probe'ları için yöntem (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS), özel b
   - Kısıt: MFA/CAPTCHA desteklenmez. Parola ve çerezler şimdilik veritabanında **düz metin** saklanır; Vault entegrasyonu yapılmadı (Ayarlar'da yer tutucu var). Yetkisi sınırlı test kullanıcıları kullanın.
 - **Asset türleri ve topoloji şekilleri**: web sitesi, web servisi, servis, veritabanı, sunucu, ağ, önbellek, kuyruk (ve otomatik "dış bağımlılık"). Tür asset detayından değiştirilir (`PATCH /api/assets/{id}`).
 - **Etkileşimli harita** (Genel bakış ve Topoloji): tüm uygulamalar türüne özgü şekillerle çizilir; kutular sürüklenebilir (yerleşim bu tarayıcıda saklanır, "Yerleşimi sıfırla" ile döner, klavyede ok tuşlarıyla da taşınır). Bir kutuya tıklayınca ona bağlı/bağımlı tüm bileşenlere yakınlaşılır, diğerleri soluklaşır ve kutuların içinde istatistikler görünür (24 sa erişilebilirlik, gecikme, CPU/bellek/disk veya son veri zamanı, açık alarm). Veri: `GET /api/topology/stats`.
+- **Hareket**: grafik çizgisi çizilerek açılır, çubuklar büyür, KPI sayıları sayarak gelir; haritada oklar bağımlılık yönünde akar, erişilemeyen asset'in noktası nabız atar, kök neden halkası döner. İşletim sisteminde "hareketi azalt" açıksa tüm animasyonlar kapanır.
+- **Kontrol edilen sayfalar** (Genel bakış): tarayıcı senaryolarının son kontrolündeki sayfa küçük görüntü olarak gösterilir; çerçeve rengi durumu belirtir (yeşil sağlıklı, sarı sayfa 24 saat içinde değişti, kırmızı başarısız, kesikli gri bekliyor). Başarısız kontrolde son sağlam görüntü gri tonlu gösterilir. Tıklayınca büyür. Yalnızca son 10 çalıştırmanın görüntüsü saklanır.
 - **Genel bakış**: KPI kartları, 24 saatlik erişilebilirlik ve alarm grafikleri (üzerine gelince ayrıntı, "tablo olarak göster"), türe göre dağılım, en yavaş hedefler, senaryo sağlık şeridi.
 - **Ayarlar**: tema (sistem/açık/koyu), renk paleti (Varsayılan, Okyanus, Orman, Gün batımı, Gül, Grafit), isteğe bağlı vurgu rengi; tercihler tarayıcıda saklanır.
 - **Sayfa değişikliği alarmı** ("Sayfa yapısı değişti"): her çalıştırma bir öncekiyle (son iki kontrol) karşılaştırılır. Yanlış pozitifleri azaltmak için: slayt gösterisi/sayaç/saat/reklam gibi dinamik bileşenler (class/id'sinde carousel, slider, counter, visitor, ticker... geçenler, `aria-live`, iframe) hiç ölçülmez; sayılar `#` olarak normalleştirilir; adım içinde 0,6 sn arayla alınan iki örnekte ortak olmayan öğeler atılır; ve kendiliğinden gelip giden öğeler (2 değişimden sonra) "dinamik" sayılıp yok sayılır (çalıştırma ayrıntısında "n öğe dinamik içerik sayıldı" görünür). Kısıt: bir değişiklik ilk kez görüldüğünde mutlaka bildirilir.

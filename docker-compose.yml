@@ -28,6 +28,8 @@ services:
       APM_RETENTION_DAYS: ${APM_RETENTION_DAYS:-14}
       APM_BROWSER_ENABLED: ${APM_BROWSER_ENABLED:-true}
     shm_size: "512mb"   # Chromium için paylaşımlı bellek
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"   # kök olmadan ICMP (ping) probe'u için
     extra_hosts:
       - "host.docker.internal:host-gateway"   # ana makinedeki uygulamaları izlemek için
     ports:

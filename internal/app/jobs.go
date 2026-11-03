@@ -41,6 +41,7 @@ type dueProbe struct {
 	typ, target       string
 	timeoutMS         int
 	http              probe.HTTPOptions
+	opts              probe.Options
 }
 
 // runDueProbes zamanı gelen probe'ları çalıştırır. last_run, SKIP LOCKED ile aynı sorguda
@@ -52,7 +53,7 @@ func (s *Server) runDueProbes(ctx context.Context) {
 		     WHERE enabled AND (last_run IS NULL OR last_run + make_interval(secs => interval_sec) <= now())
 		     ORDER BY last_run NULLS FIRST LIMIT 100 FOR UPDATE SKIP LOCKED)
 		 RETURNING id, tenant_id, asset_id, type, target, timeout_ms,
-		           http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects`)
+		           http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects, options`)
 	if err != nil {
 		log.Printf("probe sorgusu: %v", err)
 		return
@@ -60,13 +61,14 @@ func (s *Server) runDueProbes(ctx context.Context) {
 	var due []dueProbe
 	for rows.Next() {
 		var p dueProbe
-		var headers []byte
+		var headers, optsRaw []byte
 		var verify, follow bool
 		if rows.Scan(&p.id, &p.tenant, &p.asset, &p.typ, &p.target, &p.timeoutMS,
-			&p.http.Method, &headers, &p.http.Body, &p.http.ExpectStatus, &p.http.ExpectText, &verify, &follow) != nil {
+			&p.http.Method, &headers, &p.http.Body, &p.http.ExpectStatus, &p.http.ExpectText, &verify, &follow, &optsRaw) != nil {
 			continue
 		}
 		json.Unmarshal(headers, &p.http.Headers)
+		json.Unmarshal(optsRaw, &p.opts)
 		p.http.SkipTLSVerify, p.http.NoFollowRedirects = !verify, !follow
 		due = append(due, p)
 	}
@@ -80,12 +82,12 @@ func (s *Server) runDueProbes(ctx context.Context) {
 		go func(p dueProbe) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			up, latency, err := probe.Run(ctx, probe.Spec{Type: p.typ, Target: p.target,
-				Timeout: time.Duration(p.timeoutMS) * time.Millisecond, HTTP: p.http}, s.BlockPrivate)
-			if err != nil {
-				log.Printf("probe #%d (%s) başarısız: %v", p.id, p.typ, err)
+			res := probe.RunX(ctx, probe.Spec{Type: p.typ, Target: p.target,
+				Timeout: time.Duration(p.timeoutMS) * time.Millisecond, HTTP: p.http, Opts: p.opts}, s.BlockPrivate)
+			if res.Err != nil {
+				log.Printf("probe #%d (%s) başarısız: %v", p.id, p.typ, res.Err)
 			}
-			s.recordProbe(ctx, p, up, latency, probeError(p.target, err))
+			s.recordProbe(ctx, p, res.Up, res.Latency, probeError(p.target, res.Err), res.Extra)
 		}(p)
 	}
 	wg.Wait()
@@ -123,7 +125,7 @@ func hasLocalhost(s string) bool {
 	return strings.Contains(s, "localhost") || strings.Contains(s, "127.0.0.1") || strings.Contains(s, "[::1]")
 }
 
-func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency time.Duration, errMsg string) {
+func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency time.Duration, errMsg string, extra map[string]float64) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return
@@ -138,6 +140,9 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 	pts := []point{{"probe.up", upVal, now}}
 	if up {
 		pts = append(pts, point{"probe.latency_ms", float64(latency.Microseconds()) / 1000, now})
+	}
+	for k, v := range extra {
+		pts = append(pts, point{"probe." + k, v, now})
 	}
 	if err := insertMetrics(ctx, tx, p.tenant, p.asset, pts); err != nil {
 		return
