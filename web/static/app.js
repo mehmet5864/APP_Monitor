@@ -278,6 +278,20 @@
     document.body.append(ov);
   }
 
+  function changeBox(sc) {
+    const ch = sc.change;
+    const body = ch
+      ? h('ul', { class: 'chg-list' }, ch.items.map((t) => h('li', { class: t.startsWith('+') ? 'add' : 'del' }, t)),
+        ch.total > ch.items.length ? h('li', { class: 'muted' }, `… ve ${ch.total - ch.items.length} değişiklik daha`) : null)
+      : h('span', { class: 'muted small' }, 'Ayrıntı kaydı bulunamadı (eski çalıştırmalar silinmiş olabilir).');
+    const btn = h('button', { type: 'button', class: 'small', onclick: async (e) => {
+      e.stopPropagation(); btn.disabled = true;
+      try { await api(`/api/scenarios/${sc.id}/ack-changes`, { method: 'POST' }); render(); } catch (err) { btn.disabled = false; alert(err.message); }
+    } }, 'Uyarıyı temizle');
+    return h('div', { class: 'chg-box', onclick: (e) => e.stopPropagation() },
+      h('div', { class: 'small' }, h('b', null, 'Neden değişti? '), ch ? h('span', { class: 'muted' }, ago(ch.at)) : null), body, btn);
+  }
+
   function pageFrames(scenarios) {
     const list = scenarios.filter((x) => x.kind === 'browser');
     if (!list.length) return null;
@@ -287,6 +301,8 @@
       if (sc.last_ok === true) return ['ok', 'Sağlıklı'];
       return ['wait', 'Bekliyor'];
     };
+    const order = { ok: 0, chg: 1, wait: 2, bad: 3 };
+    list.sort((a, b) => order[state(a)[0]] - order[state(b)[0]] || a.name.localeCompare(b.name));
     const cards = list.map((sc) => {
       const [cls, label] = state(sc);
       const imgBox = h('div', { class: 'thumb-img' }, h('span', { class: 'muted small' }, sc.shot ? 'yükleniyor…' : 'görüntü yok'));
@@ -295,7 +311,8 @@
           h('span', { class: 'row small' }, pill(cls === 'bad' ? 'down' : cls === 'chg' ? 'warning' : cls === 'ok' ? 'up' : 'unknown', label),
             h('span', { class: 'mono muted' }, ago(sc.last_run))),
           sc.last_ok === false && sc.last_error ? h('span', { class: 'error small' }, sc.last_error.slice(0, 90)) : null,
-          sc.last_ok === false && sc.shot ? h('span', { class: 'muted small' }, 'Görüntü son başarılı kontrolden: ' + ago(sc.shot.at)) : null));
+          sc.last_ok === false && sc.shot ? h('span', { class: 'muted small' }, 'Görüntü son başarılı kontrolden: ' + ago(sc.shot.at)) : null,
+          cls === 'chg' ? changeBox(sc) : null));
       if (sc.shot) {
         fetch(`/api/scenarios/${sc.id}/runs/${sc.shot.run_id}/shots/${sc.shot.step}`, { headers: { 'X-API-Key': key } })
           .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('görüntü yok'))))
@@ -346,7 +363,7 @@
       const avg = okMs.length ? okMs.reduce((a, b) => a + b, 0) / okMs.length : null;
       return h('div', { class: 'scn-row' },
         h('div', { class: 'scn-name' }, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'),
-          sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'sayfa değişti')] : null,
+          sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'sayfa değişti'), ' ', h('button', { type: 'button', class: 'small', onclick: async () => { await api(`/api/scenarios/${sc.id}/ack-changes`, { method: 'POST' }); render(); } }, 'Temizle')] : null,
           h('div', { class: 'muted small' }, sc.asset)),
         sc.runs.length ? strip(sc.runs) : h('span', { class: 'muted small' }, 'henüz çalışmadı'),
         h('div', { class: 'scn-stat' }, last ? (last.ok ? pill('up', 'Başarılı') : pill('down', 'Başarısız')) : pill('unknown', 'Bekliyor'),
@@ -370,6 +387,7 @@
       mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('div', { class: 'topo-wrap map' }, map), info);
     }
     return h('div', null,
+      pageFrames(d.scenarios),
       h('section', null, h('h2', null, 'Genel bakış'), kpis), mapSection,
       h('div', { class: 'dash2' },
         h('section', null, h('h3', null, 'Erişilebilirlik · son 24 saat'), h('div', { class: 'panel' }, availChart(d.availability),
@@ -382,7 +400,6 @@
           h('details', { class: 'adv' }, h('summary', null, 'Tablo olarak göster'), table(['Saat', 'Kritik', 'Diğer'], alertRows, '')))),
         h('section', null, h('h3', null, 'En yavaş hedefler · son 1 saat'), h('div', { class: 'panel' },
           d.slowest.length ? rankBars(d.slowest.map((x) => ({ kind: x.kind, label: x.asset, value: x.avg_ms, text: `${fmt(x.avg_ms)} ms (en yüksek ${fmt(x.max_ms)})` })), ' ms') : h('p', { class: 'muted' }, 'Henüz probe gecikmesi verisi yok.')))),
-      pageFrames(d.scenarios),
       scen ? h('section', null, h('h3', null, 'Senaryo sağlığı'), scen) : null,
       h('section', null, h('h3', null, 'Açık alarmlar'), alertTable(alerts, false)));
   }
@@ -418,7 +435,16 @@
     const open = (id) => { selectedAsset = id; render(); };
     t.addEventListener('click', (e) => { const tr = e.target.closest('tr[data-id]'); if (tr) open(Number(tr.dataset.id)); });
     t.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const tr = e.target.closest('tr[data-id]'); if (tr) open(Number(tr.dataset.id)); } });
-    const wrap = h('div', { style: null }, h('section', null, h('h2', null, 'Assetler'), t), detail);
+    const cnt = (k) => assets.filter((a) => a.status === k).length;
+    const cpus = assets.map((a) => a.latest['host.cpu_pct']).filter((v) => v != null);
+    const avgCpu = cpus.length ? cpus.reduce((x, y) => x + y, 0) / cpus.length : null;
+    const sum = h('div', { class: 'kpis' },
+      kpi('Toplam asset', String(assets.length), 'izlenen', null, ''),
+      kpi('Çalışıyor', String(cnt('up')), 'erişilebilir', null, ''),
+      kpi('Erişilemiyor', String(cnt('down')), 'sorunlu', null, cnt('down') ? 'bad' : ''),
+      kpi('Çevrimdışı', String(cnt('offline')), 'veri gelmiyor', null, cnt('offline') ? 'bad' : ''),
+      kpi('Ort. CPU', avgCpu == null ? '—' : fmt(avgCpu) + '%', cpus.length + ' sunucu', null, avgCpu > 90 ? 'bad' : ''));
+    const wrap = h('div', { style: null }, h('section', null, h('h2', null, 'Assetler'), sum, t), detail);
     const sel = assets.find((a) => a.id === selectedAsset);
     if (sel) await fillDetail(detail, sel);
     return wrap;
@@ -589,8 +615,12 @@
       h('td', { class: 'mono small' }, ago(p.last_run)),
       h('td', null, !p.last_run ? pill('unknown', 'Bekliyor') : p.last_error ? h('span', { class: 'error small' }, p.last_error) : pill('up', 'Başarılı')),
       h('td', null, h('button', { type: 'button', class: 'danger', onclick: async () => { try { await api('/api/probes/' + p.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil'))));
+    const types = {}; probes.forEach((p) => { types[p.type] = (types[p.type] || 0) + 1; });
+    const pSum = h('div', { class: 'kpis' },
+      kpi('Probe sayısı', String(probes.length), 'tanımlı', null, ''),
+      ...Object.entries(types).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => kpi(k.toUpperCase(), String(n), 'probe', null, '')));
     return h('div', { style: null },
-      h('section', null, h('h2', null, 'Agent\'sız izleme (probe)'),
+      h('section', null, h('h2', null, 'Agent\'sız izleme (probe)'), probes.length ? pSum : null,
         h('p', { class: 'muted' }, 'Sunucunuza hiçbir şey kurmadan HTTP, TCP, ICMP (ping), SNMP, DNS, TLS sertifikası, UDP, NTP ve PostgreSQL erişilebilirliğini ve gecikmesini izler. Yeni bir asset adı yazarsanız lisanstan bir asset düşer.'),
         h('p', { class: 'muted' }, 'APP_MON Docker içinde çalışıyorsa localhost konteynerin kendisidir. Windows veya Mac\'teki bir uygulamayı izlemek için localhost yerine host.docker.internal yazın (ör. host.docker.internal:43130).'),
         h('div', { class: 'panel' }, f, msg)),
@@ -1046,8 +1076,15 @@
         h('div', { class: 'btns' },
           have.has(ruleKey(t)) ? h('span', { class: 'muted small' }, 'Ekli') : h('button', { type: 'button', onclick: () => addTpl([t]) }, 'Ekle'),
           h('button', { type: 'button', onclick: () => fill({ ...t, id: null, enabled: true, _tpl: true }) || (editing = null, formTitle.textContent = 'Yeni kural (şablondan)', $('#r-save', f).textContent = 'Kural ekle', $('#r-cancel', f).hidden = false) }, 'Düzenleyip ekle'))))))));
+    const sevN = (k) => open.filter((a) => a.severity === k).length;
+    const aSum = h('div', { class: 'kpis' },
+      kpi('Kritik', String(sevN('critical')), 'açık alarm', null, sevN('critical') ? 'bad' : ''),
+      kpi('Uyarı', String(sevN('warning')), 'açık alarm', null, ''),
+      kpi('Bilgi', String(sevN('info')), 'açık alarm', null, ''),
+      kpi('Kapanan', String(resolved.length), 'son kayıtlar', null, ''),
+      kpi('Kurallar', `${rules.filter((r) => r.enabled).length} / ${rules.length}`, 'etkin', null, ''));
     return h('div', null,
-      h('section', null, h('h2', null, 'Açık alarmlar'), alertTable(open, false)),
+      h('section', null, h('h2', null, 'Açık alarmlar'), aSum, alertTable(open, false)),
       h('section', null, h('h3', null, 'Alarm kuralları'),
         h('p', { class: 'muted' }, 'Kural, pencere içindeki ortalama değeri eşikle karşılaştırır. Kuralı düzenleyince açık alarmları kapanır; koşul sürüyorsa yeniden açılır.'),
         table(['Ad', 'Koşul', 'Pencere', 'Önem', ''], rows, 'Kural yok.'),
@@ -1103,6 +1140,10 @@
     const origin = location.origin;
     return h('div', { style: null },
       h('section', null, h('h2', null, 'Lisans'),
+        h('div', { class: 'kpis' },
+          kpi('Kullanılan asset', `${lic.assets_used} / ${lic.asset_limit}`, lic.asset_limit ? `%${Math.round(lic.assets_used / lic.asset_limit * 100)} dolu` : 'sınırsız', null, lic.asset_limit && lic.assets_used >= lic.asset_limit ? 'bad' : ''),
+          kpi('Mod', lic.mode === 'saas' ? 'SaaS' : 'On-prem', 'dağıtım', null, ''),
+          kpi('Geçerlilik', lic.valid_until ? lic.valid_until.slice(0, 10) : 'Süresiz', 'bitiş tarihi', null, '')),
         h('p', { class: 'muted' }, `${lic.mode === 'saas' ? 'SaaS' : 'On-premise'} modu. İzlenen her benzersiz asset (sunucu, servis, veritabanı, URL) lisanstan bir birim düşer; limit dolunca yeni asset kabul edilmez, mevcutlar izlenmeye devam eder.`),
         h('div', { class: 'panel' }, lf, msg)),
       h('section', null, h('h2', null, 'API anahtarları'), keyOut,
@@ -1526,7 +1567,37 @@
         } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
       });
     }
+    // Tüm bağlantılar: değiştir / sil
+    const manual = t.edges.filter((e) => !e.auto);
+    const kindLabel = (k) => (k === 'runs_on' ? 'üzerinde çalışır' : 'bağımlıdır');
+    const emsg = h('p', { class: 'msg', role: 'status' });
+    const edgeRows = manual.map((e) => {
+      const tr = h('tr', null);
+      const showView = () => { tr.className = ''; tr.replaceChildren(
+        h('td', null, names.get(e.source)), h('td', null, kindLabel(e.kind)), h('td', null, names.get(e.target)),
+        h('td', { class: 'actions' },
+          h('button', { type: 'button', onclick: showEdit }, 'Değiştir'),
+          h('button', { type: 'button', class: 'danger', onclick: async () => {
+            if (!confirm(`${names.get(e.source)} → ${names.get(e.target)} bağlantısı silinsin mi?`)) return;
+            try { await api('/api/topology/edges/' + e.id, { method: 'DELETE' }); render(); } catch (x) { emsg.className = 'msg error'; emsg.textContent = x.message; }
+          } }, 'Sil'))); };
+      const showEdit = () => {
+        const a = select(null, opts, String(e.source)), k = select(null, [['depends_on', 'bağımlıdır'], ['runs_on', 'üzerinde çalışır']], e.kind), b = select(null, opts, String(e.target));
+        tr.className = 'editing-row';
+        tr.replaceChildren(h('td', null, a), h('td', null, k), h('td', null, b), h('td', { class: 'actions' },
+          h('button', { type: 'button', class: 'primary', onclick: async () => {
+            try { await api('/api/topology/edges/' + e.id, { method: 'PUT', body: { source: Number(a.value), target: Number(b.value), kind: k.value } }); render(); } catch (x) { emsg.className = 'msg error'; emsg.textContent = x.message; }
+          } }, 'Kaydet'),
+          h('button', { type: 'button', onclick: showView }, 'Vazgeç')));
+      };
+      showView();
+      return tr;
+    });
+    const edgeTable = manual.length
+      ? table(['Kaynak', 'İlişki', 'Hedef', ''], edgeRows, '')
+      : h('p', { class: 'muted' }, 'Elle tanımlanmış bağlantı yok. Otomatik bağlantılar (dış servis çağrıları) buradan değiştirilemez.');
     return h('div', null, head, banner, legend, shapesLegend, tools, wrap, panel,
+      h('section', null, h('h3', null, 'Bağlantılar'), h('div', { class: 'panel' }, edgeTable, emsg)),
       h('section', null, h('h3', null, 'Bağlantı tanımla'), h('div', { class: 'panel' }, form, msg)));
   }
 
@@ -1582,7 +1653,7 @@
   window.addEventListener('hashchange', () => { hideTip(); if (recCleanup) recCleanup(); selectedAsset = null; selectedNode = null; render(); });
   setInterval(() => {
     const typing = document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
-    if (key && !$('#app').hidden && AUTO.has(current()) && !typing) render();
+    if (key && !$('#app').hidden && AUTO.has(current()) && !typing && !document.querySelector('.editing-row')) render();
   }, 10000);
 
   if (key) { api('/api/overview').then(showApp).catch(() => { $('#login').hidden = false; }); } else { $('#login').hidden = false; }

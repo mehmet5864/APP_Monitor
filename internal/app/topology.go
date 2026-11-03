@@ -252,3 +252,51 @@ func (s *Server) assetImpact(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	writeJSON(w, 200, map[string]any{"impacted": impacted, "dependencies": deps})
 }
+
+// updateEdge mevcut bir bağlantının kaynağını, hedefini veya ilişki türünü değiştirir.
+func (s *Server) updateEdge(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var req struct {
+		Source int64  `json:"source"`
+		Target int64  `json:"target"`
+		Kind   string `json:"kind"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Kind == "" {
+		req.Kind = "depends_on"
+	}
+	if req.Source <= 0 || req.Target <= 0 || req.Source == req.Target || !oneOf(req.Kind, "depends_on", "runs_on") {
+		fail(w, 400, "source ve target farklı birer asset olmalı; kind depends_on veya runs_on olmalı")
+		return
+	}
+	var n int
+	if err := s.DB.QueryRowContext(r.Context(),
+		`SELECT count(*) FROM assets WHERE tenant_id = $1 AND id IN ($2, $3)`, a.TenantID, req.Source, req.Target).Scan(&n); err != nil || n != 2 {
+		fail(w, 404, "asset bulunamadı")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(),
+		`UPDATE topology_edges SET source_asset_id = $1, target_asset_id = $2, kind = $3 WHERE id = $4 AND tenant_id = $5`,
+		req.Source, req.Target, req.Kind, id, a.TenantID)
+	var pe *pq.Error
+	if errors.As(err, &pe) && pe.Code == "23505" {
+		fail(w, http.StatusConflict, "bu bağlantı zaten var")
+		return
+	}
+	if err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	if c, _ := res.RowsAffected(); c == 0 {
+		fail(w, 404, "bağlantı bulunamadı")
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "topology.edge_update", strconv.FormatInt(req.Source, 10)+" -> "+strconv.FormatInt(req.Target, 10))
+	w.WriteHeader(http.StatusNoContent)
+}

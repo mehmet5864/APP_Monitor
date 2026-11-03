@@ -212,3 +212,15 @@ internal/scenario/ çok adımlı HTTP senaryo motoru (çerez, değişken, çıka
 internal/db/       bağlantı ve gömülü migration'lar
 web/static/        arayüz (derleme gerektirmeyen HTML/CSS/JS)
 ```
+
+## Sayfa değişti uyarısı: neden ve temizleme
+
+- Panodaki "Kontrol edilen sayfalar" bölümü en üsttedir; sağlıklı sayfalar önce, ardından değişen, bekleyen ve başarısız olanlar sıralanır.
+- "Sayfa değişti" kartında **Neden değişti?** kutusu, son değişiklikte eklenen (+) ve kaybolan (−) öğeleri gösterir.
+- **Uyarıyı temizle** (`POST /api/scenarios/{id}/ack-changes`) rozeti kaldırır, ilgili açık alarmı kapatır ve son bir saatin değişiklik ölçümlerini siler; yeni bir değişiklik olursa yeniden işaretlenir.
+- Parmak izi biçimi sürümlüdür (migrasyon 009): sürüm yükseltmesinden sonraki ilk çalıştırma yeni taban çizgisi olur, sahte değişiklik üretmez.
+- Assetler, Alarmlar, Probe'lar ve Lisans sayfalarına özet kartları eklendi.
+
+## Topoloji: bağlantı değiştirme ve silme
+
+Topoloji sayfasındaki **Bağlantılar** tablosunda elle tanımlanmış her bağlantı için **Değiştir** (kaynak, ilişki, hedef; `PUT /api/topology/edges/{id}`) ve **Sil** düğmeleri bulunur. Otomatik (dış servis) bağlantılar değiştirilemez.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -121,6 +122,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 				if lastOK != nil {
 					it["last_ok"] = *lastOK
 				}
+				if changed != nil {
+					if ch := s.lastChange(ctx, id); ch != nil {
+						it["change"] = ch
+					}
+				}
 				// Küçük resim: görüntüsü olan en son çalıştırmanın son adımı (başarısız çalıştırmada son sağlam görüntü).
 				if kind == "browser" {
 					var runID int64
@@ -209,4 +215,92 @@ func (s *Server) topologyStats(w http.ResponseWriter, r *http.Request, a Auth) {
 	q(`SELECT asset_id, 'last', 0, max(time) FROM metrics WHERE tenant_id = $1 AND time > now() - interval '24 hours' GROUP BY asset_id`,
 		func(id int64, _ string, _ float64, ts time.Time) { get(id)["last_seen"] = ts })
 	writeJSON(w, 200, out)
+}
+
+// lastChange bir senaryonun en son sayfa değişikliğini (hangi adımda ne eklendi/kayboldu) özetler.
+func (s *Server) lastChange(ctx context.Context, scenarioID int64) map[string]any {
+	rows, err := s.DB.QueryContext(ctx, `SELECT at, steps FROM scenario_runs WHERE scenario_id = $1 ORDER BY id DESC LIMIT 30`, scenarioID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var at time.Time
+		var raw []byte
+		if rows.Scan(&at, &raw) != nil {
+			continue
+		}
+		var steps []struct {
+			Name    string   `json:"name"`
+			Added   []string `json:"added"`
+			Removed []string `json:"removed"`
+		}
+		if json.Unmarshal(raw, &steps) != nil {
+			continue
+		}
+		var lines []string
+		for _, st := range steps {
+			for _, a := range st.Added {
+				lines = append(lines, "+ "+a)
+			}
+			for _, r := range st.Removed {
+				lines = append(lines, "− "+r)
+			}
+		}
+		if len(lines) > 0 {
+			total := len(lines)
+			if len(lines) > 6 {
+				lines = lines[:6]
+			}
+			return map[string]any{"at": at, "items": lines, "total": total}
+		}
+	}
+	return nil
+}
+
+// ackScenarioChanges "sayfa değişti" işaretini ve ilgili açık alarmı temizler. Pencere ortalamasının alarmı yeniden
+// açmaması için son bir saatin scenario.changes ölçümleri de silinir.
+func (s *Server) ackScenarioChanges(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var assetID int64
+	var name string
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT asset_id, name FROM scenarios WHERE id = $1 AND tenant_id = $2`, id, a.TenantID).Scan(&assetID, &name); err != nil {
+		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`UPDATE scenarios SET last_changed_at = NULL WHERE id = $1`,
+	} {
+		if _, err := tx.ExecContext(r.Context(), q, id); err != nil {
+			fail(w, 500, "veritabanı hatası")
+			return
+		}
+	}
+	if _, err := tx.ExecContext(r.Context(), `DELETE FROM metrics WHERE tenant_id = $1 AND asset_id = $2 AND name = 'scenario.changes' AND time > now() - interval '1 hour'`, a.TenantID, assetID); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(),
+		`UPDATE alerts SET state = 'resolved', resolved_at = now()
+		 WHERE tenant_id = $1 AND asset_id = $2 AND state = 'open' AND rule_id IN (SELECT id FROM alert_rules WHERE tenant_id = $1 AND metric = 'scenario.changes')`,
+		a.TenantID, assetID); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "scenario.ack_changes", name)
+	w.WriteHeader(http.StatusNoContent)
 }

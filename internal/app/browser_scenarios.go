@@ -112,9 +112,9 @@ func (b *browserExtra) persist(ctx context.Context, tx *sql.Tx, sc scenarioRow, 
 			items, _ := json.Marshal(st.Items)
 			fl, _ := json.Marshal(capFlips(b.flips[i]))
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO scenario_step_prints (scenario_id, step_idx, hash, items, flips) VALUES ($1,$2,$3,$4,$5)
-				 ON CONFLICT (scenario_id, step_idx) DO UPDATE SET hash = EXCLUDED.hash, items = EXCLUDED.items, flips = EXCLUDED.flips, updated_at = now()`,
-				sc.id, i, st.Hash, string(items), string(fl)); err != nil {
+				`INSERT INTO scenario_step_prints (scenario_id, step_idx, hash, items, flips, fp_version) VALUES ($1,$2,$3,$4,$5,$6)
+				 ON CONFLICT (scenario_id, step_idx) DO UPDATE SET hash = EXCLUDED.hash, items = EXCLUDED.items, flips = EXCLUDED.flips, fp_version = EXCLUDED.fp_version, updated_at = now()`,
+				sc.id, i, st.Hash, string(items), string(fl), browser.FPVersion); err != nil {
 				return err
 			}
 		}
@@ -272,12 +272,15 @@ func (s *Server) executeBrowser(ctx context.Context, sc scenarioRow, maxDur time
 
 	prev := map[int][]string{}
 	flips := map[int]map[string]int{}
-	if rows, err := s.DB.QueryContext(ctx, `SELECT step_idx, items, flips FROM scenario_step_prints WHERE scenario_id = $1`, sc.id); err == nil {
+	if rows, err := s.DB.QueryContext(ctx, `SELECT step_idx, items, flips, fp_version FROM scenario_step_prints WHERE scenario_id = $1`, sc.id); err == nil {
 		for rows.Next() {
-			var idx int
+			var idx, ver int
 			var raw, fraw []byte
 			var items []string
-			if rows.Scan(&idx, &raw, &fraw) == nil && json.Unmarshal(raw, &items) == nil {
+			if rows.Scan(&idx, &raw, &fraw, &ver) == nil && json.Unmarshal(raw, &items) == nil {
+				if ver != browser.FPVersion {
+					continue // eski biçimli parmak izi: karşılaştırma yapma, bu çalıştırma yeni taban çizgisi olsun
+				}
 				prev[idx] = items
 				var fm map[string]int
 				if json.Unmarshal(fraw, &fm) == nil {

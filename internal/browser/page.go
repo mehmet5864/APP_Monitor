@@ -400,6 +400,9 @@ func (p *Page) DescribeActive(ctx context.Context) (*ElemInfo, error) {
 	return info, err
 }
 
+// FPVersion parmak izi biçiminin sürümüdür; biçim değiştiğinde artırılır (eski taban çizgisiyle karşılaştırma yapılmaz).
+const FPVersion = 2
+
 // dynSelector dönen/değişen bileşenleri (slayt gösterisi, ziyaretçi sayacı, saat, reklam...) tanımlar; parmak izine girmez.
 const dynSelector = `[class*="carousel" i],[class*="slider" i],[class*="slideshow" i],[class*="swiper" i],[class*="slick" i],[class*="ticker" i],` +
 	`[class*="marquee" i],[class*="counter" i],[class*="visitor" i],[class*="rotator" i],[class*="countdown" i],[class*="clock" i],[class*="timer" i],` +
