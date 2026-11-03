@@ -1,0 +1,6 @@
+dist/
+.git
+.env
+README.md
+docs/
+*.bat

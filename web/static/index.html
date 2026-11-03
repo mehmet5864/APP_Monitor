@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APP_MON</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="icon" href="data:,">
+<script src="/theme.js"></script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-box">
+    <span class="eyebrow">APP_MON</span>
+    <h1>Uygulama izleme ve performans ölçme</h1>
+    <label for="login-key">Yönetici API anahtarı</label>
+    <input id="login-key" type="password" autocomplete="off" required>
+    <p id="login-error" class="error" hidden></p>
+    <button type="submit" class="primary">Giriş yap</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <div class="brand">APP_MON <span id="mode" class="tag"></span></div>
+    <nav id="nav" aria-label="Ana menü"></nav>
+    <div class="top-right">
+    <div class="meter-wrap" title="Lisanslı asset sayısı">
+      <span class="mono small" id="meter-label"></span>
+      <div class="meter"><div id="meter-fill"></div></div>
+    </div>
+    <button id="logout" type="button">Çıkış</button>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
