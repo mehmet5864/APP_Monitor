@@ -450,7 +450,7 @@
             h('button', { type: 'button', onclick: () => { selectedNode = sel; location.hash = 'topoloji'; } }, 'Topolojide aç')));
       };
       paintInfo();
-      mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('div', { class: 'topo-wrap map' }, map), info);
+      mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Tüm kutuları (web uygulamaları dahil) fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
     }
     return h('div', null,
       pageFrames(d.scenarios),
@@ -1941,7 +1941,7 @@
   window.addEventListener('hashchange', () => { hideTip(); if (recCleanup) recCleanup(); selectedAsset = null; selectedNode = null; render(); });
   setInterval(() => {
     const typing = document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
-    if (key && !$('#app').hidden && AUTO.has(current()) && !typing && !document.querySelector('.editing-row')) render();
+    if (key && !$('#app').hidden && AUTO.has(current()) && !typing && !document.querySelector('.editing-row, .node.dragging, .thumb.dragging')) render();
   }, 10000);
 
   // ---- Üst çubuk araçları: uyarı zili, sayfada arama, yazdırma ----
