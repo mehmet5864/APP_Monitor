@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +152,11 @@ func NewPage(ctx context.Context, c *cdp.Client) (*Page, error) {
 	}
 	if err := c.Call(ctx, "Emulation.setDeviceMetricsOverride", map[string]any{"width": ViewW, "height": ViewH, "deviceScaleFactor": 1, "mobile": false}, nil); err != nil {
 		return nil, err
+	}
+	// Kurum içi sistemler genellikle özel/self-signed sertifika kullanır; yönlendirilen https adresleri de açılabilsin.
+	// Sıkı doğrulama için APM_BROWSER_STRICT_TLS=true.
+	if os.Getenv("APM_BROWSER_STRICT_TLS") != "true" {
+		c.Call(ctx, "Security.setIgnoreCertificateErrors", map[string]any{"ignore": true}, nil)
 	}
 	c.Call(ctx, "Page.setDownloadBehavior", map[string]any{"behavior": "deny"}, nil)
 	c.Call(ctx, "Browser.setDownloadBehavior", map[string]any{"behavior": "deny"}, nil)
