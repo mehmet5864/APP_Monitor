@@ -273,11 +273,21 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 			var bs []browser.Step
 			json.Unmarshal(stepsRaw, &bs)
 			for _, st := range bs {
-				summaries = append(summaries, map[string]any{"name": st.Name, "method": strings.ToUpper(st.Action), "summary": st.Summary()})
+				e := map[string]any{"name": st.Name, "method": strings.ToUpper(st.Action), "summary": st.Summary(), "action": st.Action,
+					"url": st.URL, "selector": st.Selector, "key": st.Key, "expect_text": st.ExpectText, "max_ms": st.MaxMS, "login": st.Login, "secret": st.Secret}
+				if !st.Secret {
+					e["value"] = st.Value
+				}
+				summaries = append(summaries, e)
 			}
 		} else {
 			json.Unmarshal(stepsRaw, &steps)
 			summaries = stepSummary(steps)
+			for i := range summaries {
+				if i < len(steps) {
+					summaries[i]["url"], summaries[i]["expect_status"], summaries[i]["expect_text"], summaries[i]["max_ms"] = steps[i].URL, steps[i].ExpectStatus, steps[i].ExpectText, steps[i].MaxMS
+				}
+			}
 		}
 		varNames := make([]string, 0, len(vars))
 		for k := range vars {
@@ -292,7 +302,7 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		var au browser.Auth
 		if json.Unmarshal(authRaw, &au) == nil && au.Enabled { // parola ve selector ayrıntıları dışarı verilmez
-			sum := map[string]any{"mode": au.Mode, "username": au.Username, "check_url": au.CheckURL}
+			sum := map[string]any{"mode": au.Mode, "username": au.Username, "check_url": au.CheckURL, "user_selector": au.UserSelector, "pass_selector": au.PassSelector, "submit_selector": au.SubmitSelector, "logged_in_text": au.LoggedInText}
 			if sessionAt.Valid {
 				sum["session_at"] = sessionAt.Time
 			}
@@ -513,4 +523,182 @@ func (s *Server) listScenarioRuns(w http.ResponseWriter, r *http.Request, a Auth
 func isUniqueViolation(err error) bool {
 	var pe *pq.Error
 	return errors.As(err, &pe) && pe.Code == "23505"
+}
+
+type editStep struct {
+	From         int    `json:"from"` // kayıtlı adımın eski sırası (gizli alanlar buradan korunur)
+	Name         string `json:"name"`
+	Method       string `json:"method"`
+	URL          string `json:"url"`
+	ExpectStatus string `json:"expect_status"`
+	ExpectText   string `json:"expect_text"`
+	MaxMS        int    `json:"max_ms"`
+	Selector     string `json:"selector"`
+	Value        string `json:"value"`
+	Key          string `json:"key"`
+	Login        bool   `json:"login"`
+}
+
+type scenarioEdit struct {
+	Name        string        `json:"name"`
+	IntervalSec int           `json:"interval_sec"`
+	TimeoutMS   int           `json:"timeout_ms"`
+	VerifyTLS   *bool         `json:"verify_tls"`
+	Enabled     *bool         `json:"enabled"`
+	Steps       []editStep    `json:"steps"`
+	Auth        *browser.Auth `json:"auth"`
+}
+
+// updateScenario kayıtlı bir senaryoyu düzenler. Başlık/gövde/değişken gibi gizli alanlar adımın eski sırası (from)
+// üzerinden korunur; yalnızca görünen alanlar değiştirilir. Adımlar silinebilir ve yeniden sıralanabilir.
+func (s *Server) updateScenario(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var req scenarioEdit
+	if !decode(w, r, &req) {
+		return
+	}
+	sc, err := s.loadScenario(r.Context(), a.TenantID, id)
+	if err != nil {
+		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	var authRaw []byte
+	var oldAuth browser.Auth
+	var enabled bool
+	var interval int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT auth, enabled, interval_sec FROM scenarios WHERE id = $1 AND tenant_id = $2`, id, a.TenantID).Scan(&authRaw, &enabled, &interval); err != nil {
+		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	json.Unmarshal(authRaw, &oldAuth)
+
+	p := scenarioPayload{Name: req.Name, IntervalSec: req.IntervalSec, TimeoutMS: req.TimeoutMS, VerifyTLS: req.VerifyTLS, Vars: sc.vars, Kind: sc.kind}
+	if p.Name == "" {
+		p.Name = "x" // ad değişmiyor sayılır; aşağıda eski ad korunur
+	}
+	if p.IntervalSec == 0 {
+		p.IntervalSec = interval
+	}
+	if p.TimeoutMS == 0 {
+		p.TimeoutMS = sc.timeoutMS
+	}
+	if p.VerifyTLS == nil {
+		v := sc.verifyTLS
+		p.VerifyTLS = &v
+	}
+	stepsChanged := false
+	if sc.kind == "browser" {
+		p.BSteps = sc.bsteps
+	} else {
+		p.Steps = sc.steps
+	}
+	if req.Steps != nil {
+		stepsChanged = true
+		if len(req.Steps) == 0 {
+			fail(w, 400, "en az bir adım kalmalı")
+			return
+		}
+		if sc.kind == "browser" {
+			var out []browser.Step
+			for _, e := range req.Steps {
+				if e.From < 0 || e.From >= len(sc.bsteps) {
+					fail(w, 400, "geçersiz adım")
+					return
+				}
+				st := sc.bsteps[e.From]
+				st.Name, st.URL, st.Selector, st.Key, st.ExpectText, st.MaxMS, st.Login = e.Name, e.URL, e.Selector, e.Key, e.ExpectText, e.MaxMS, e.Login
+				if !st.Secret {
+					st.Value = e.Value
+				}
+				out = append(out, st)
+			}
+			p.BSteps = out
+		} else {
+			var out []scenario.Step
+			for _, e := range req.Steps {
+				if e.From < 0 || e.From >= len(sc.steps) {
+					fail(w, 400, "geçersiz adım")
+					return
+				}
+				st := sc.steps[e.From]
+				st.Name, st.Method, st.URL, st.ExpectStatus, st.ExpectText, st.MaxMS = e.Name, e.Method, e.URL, e.ExpectStatus, e.ExpectText, e.MaxMS
+				out = append(out, st)
+			}
+			p.Steps = out
+		}
+	}
+	// kimlik doğrulama (yalnızca tarayıcı senaryoları)
+	newAuth := oldAuth
+	credsChanged := false
+	if sc.kind == "browser" {
+		if req.Auth != nil {
+			na := *req.Auth
+			if na.Enabled && na.Password == "" && oldAuth.Mode == "form" && na.Mode == "form" {
+				na.Password = oldAuth.Password
+			}
+			credsChanged = na.Enabled != oldAuth.Enabled || na.Username != oldAuth.Username || na.Password != oldAuth.Password ||
+				na.UserSelector != oldAuth.UserSelector || na.PassSelector != oldAuth.PassSelector || na.SubmitSelector != oldAuth.SubmitSelector ||
+				na.CheckURL != oldAuth.CheckURL || na.Mode != oldAuth.Mode
+			newAuth = na
+		}
+		p.Auth = &newAuth
+	}
+	if err := p.prepare(true); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = sc.name
+	}
+	if len(name) > 200 {
+		fail(w, 400, "senaryo adı en fazla 200 karakter olmalı")
+		return
+	}
+	stepsJSON := []byte(nil)
+	if sc.kind == "browser" {
+		stepsJSON, _ = json.Marshal(p.BSteps)
+	} else {
+		stepsJSON, _ = json.Marshal(p.Steps)
+	}
+	authJSON := []byte("{}")
+	if sc.kind == "browser" && newAuth.Enabled {
+		authJSON, _ = json.Marshal(newAuth)
+	}
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(),
+		`UPDATE scenarios SET name = $1, interval_sec = $2, timeout_ms = $3, verify_tls = $4, enabled = $5, steps = $6, auth = $7 WHERE id = $8 AND tenant_id = $9`,
+		name, p.IntervalSec, p.TimeoutMS, p.verifyTLS(), enabled, string(stepsJSON), string(authJSON), id, a.TenantID); err != nil {
+		if isUniqueViolation(err) {
+			fail(w, http.StatusConflict, "bu isimde bir senaryo zaten var")
+			return
+		}
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	if credsChanged {
+		tx.ExecContext(r.Context(), `UPDATE scenarios SET session = NULL, login_fails = 0, auth_blocked = false WHERE id = $1`, id)
+	}
+	if stepsChanged { // adım sırası değiştiyse sayfa parmak izi taban çizgisi geçersiz
+		tx.ExecContext(r.Context(), `DELETE FROM scenario_step_prints WHERE scenario_id = $1`, id)
+		tx.ExecContext(r.Context(), `UPDATE scenarios SET last_changed_at = NULL WHERE id = $1`, id)
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "scenario.update", name)
+	w.WriteHeader(http.StatusNoContent)
 }

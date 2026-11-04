@@ -236,3 +236,7 @@ Otomatik giriş (form modu) art arda **3 kez** başarısız olursa (kullanıcı 
 ## Giriş ekranı analizi
 
 Kayıt başlatırken "Bu sistemde kimlik doğrulama var" seçilince **Giriş ekranını analiz et** düğmesi giriş sayfasını açar (hiçbir veri göndermeden) ve hangi bilgilerin girilmesi gerektiğini açıklar: kullanıcı adı/parola alanları, giriş düğmesi, ek/zorunlu alanlar ve otomatik girişi engelleyebilecek durumlar (captcha, tek kullanımlık kod/2 adımlı doğrulama, SSO düğmeleri, iki adımlı giriş ekranı). Bulunan alan seçicileri boşsa "Alan seçicileri" kutularına önerilir (`POST /api/recorder/analyze-login`).
+
+## Senaryo düzenleme
+
+Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarları, adım alanları (ad, adres, yöntem, beklenen durum/metin, en çok süre, seçici…), adım sırası/silme ve (tarayıcı senaryolarında) kimlik doğrulama ayarları değiştirilebilir (`PUT /api/scenarios/{id}`). Başlık, gövde, değişken ve gizli değerler korunur; parola alanı boş bırakılırsa eski parola kalır. Adımlar değişirse sayfa değişikliği taban çizgisi sıfırlanır; kimlik bilgileri değişirse kayıtlı oturum silinir. "HTTP adımlarıyla elle tanımla" bölümü varsayılan olarak kapalıdır, başlığına tıklayınca açılır.

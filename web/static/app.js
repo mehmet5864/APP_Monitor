@@ -1048,6 +1048,78 @@
         h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: () => go(true) }, 'Kaydet ve yeniden etkinleştir'), h('button', { type: 'button', onclick: () => go(false) }, 'Bilgileri değiştirmeden yeniden dene'))));
       out.scrollIntoView({ block: 'center', behavior: 'smooth' });
     };
+    const editBox = h('div');
+    const editForm = (sc) => {
+      const isB = sc.kind === 'browser';
+      const emsg = h('p', { class: 'msg', role: 'status' });
+      const nm = h('input', { value: sc.name, maxlength: '200', required: true });
+      const iv = h('input', { type: 'number', value: String(sc.interval_sec), min: isB ? '60' : '30' });
+      const to = h('input', { type: 'number', value: String(sc.timeout_ms), min: '500', max: '60000' });
+      const tls = h('input', { type: 'checkbox' }); tls.checked = sc.verify_tls;
+      const en = h('input', { type: 'checkbox' }); en.checked = sc.enabled;
+      // adımlar: from = eski sıra
+      let items = sc.steps.map((st, i) => ({ from: i, ...st }));
+      const stepsBox = h('div', { class: 'stack' });
+      const inp = (v, ph, w) => h('input', { value: v == null ? '' : String(v), placeholder: ph, style: null });
+      const drawSteps = () => {
+        stepsBox.replaceChildren(...items.map((it, i) => {
+          const refs = {};
+          const mk = (k, label, ph, type) => { refs[k] = h('input', { value: it[k] == null ? '' : String(it[k]), placeholder: ph || '', type: type || 'text' }); return field(label, refs[k]); };
+          const sync = () => { for (const k in refs) it[k] = refs[k].type === 'number' ? Number(refs[k].value || 0) : refs[k].value; if (refs.login) it.login = refs.login.checked; };
+          const fields = [mk('name', 'Adım adı')];
+          if (isB) {
+            if (it.action === 'goto') fields.push(mk('url', 'Adres'));
+            else { fields.push(mk('selector', 'Seçici (CSS)')); if (it.action === 'type' && !it.secret) fields.push(mk('value', 'Yazılan metin')); if (it.action === 'press') fields.push(mk('key', 'Tuş')); }
+            fields.push(mk('expect_text', 'Beklenen metin', 'isteğe bağlı'), mk('max_ms', 'En çok süre (ms)', '0 = sınırsız', 'number'));
+          } else {
+            fields.push(mk('method', 'Yöntem'), mk('url', 'Adres'), mk('expect_status', 'Beklenen durum', 'ör. 200 veya 200-299'), mk('expect_text', 'Beklenen metin', 'isteğe bağlı'), mk('max_ms', 'En çok süre (ms)', '0 = sınırsız', 'number'));
+          }
+          const bar = h('span', { class: 'row' },
+            h('button', { type: 'button', disabled: i === 0, onclick: () => { sync(); [items[i - 1], items[i]] = [items[i], items[i - 1]]; drawSteps(); } }, '↑'),
+            h('button', { type: 'button', disabled: i === items.length - 1, onclick: () => { sync(); [items[i + 1], items[i]] = [items[i], items[i + 1]]; drawSteps(); } }, '↓'),
+            h('button', { type: 'button', class: 'danger', disabled: items.length === 1, onclick: () => { items.splice(i, 1); drawSteps(); } }, 'Sil'));
+          const box = h('fieldset', { class: 'step-edit' }, h('legend', null, `Adım ${i + 1} · ${it.method || ''}${it.secret ? ' · gizli değer' : ''}`), h('div', { class: 'inline' }, fields), bar);
+          box.addEventListener('input', sync); box.addEventListener('change', sync);
+          return box;
+        }));
+      };
+      drawSteps();
+      // kimlik doğrulama (tarayıcı)
+      let authBox = null, getAuth = () => undefined;
+      if (isB) {
+        const au = sc.auth || {};
+        const aOn = h('input', { type: 'checkbox' }); aOn.checked = !!sc.auth;
+        const aMode = select(null, [['form', 'Kullanıcı adı/parola (otomatik doldur)'], ['steps', 'Kayıttaki adımlar giriş olarak çalışsın']], au.mode || 'form');
+        const aUser = h('input', { value: au.username || '', autocomplete: 'off' });
+        const aPass = h('input', { type: 'password', autocomplete: 'new-password', placeholder: sc.auth ? 'değiştirmek için yazın (boş = aynı)' : '' });
+        const aCheck = h('input', { value: au.check_url || '', placeholder: 'giriş gerektiren sayfa' });
+        const aText = h('input', { value: au.logged_in_text || '' });
+        const aSel = [au.user_selector, au.pass_selector, au.submit_selector].map((v) => h('input', { value: v || '' }));
+        authBox = h('fieldset', { class: 'step-edit' }, h('legend', null, 'Kimlik doğrulama'),
+          h('label', { class: 'check' }, aOn, 'Bu senaryoda giriş var'),
+          h('div', { class: 'inline' }, field('Mod', aMode), field('Kullanıcı adı', aUser), field('Parola', aPass)),
+          h('div', { class: 'inline' }, field('Giriş gerektiren adres', aCheck), field('Girişliyken görünen metin', aText)),
+          h('div', { class: 'inline' }, field('Kullanıcı adı alanı (CSS)', aSel[0]), field('Parola alanı (CSS)', aSel[1]), field('Giriş düğmesi (CSS)', aSel[2])),
+          h('p', { class: 'muted small' }, 'Kullanıcı adı, parola veya seçiciler değişirse kayıtlı oturum silinir ve giriş hata sayacı sıfırlanır.'));
+        getAuth = () => ({ enabled: aOn.checked, mode: aMode.value, username: aUser.value, password: aPass.value, check_url: aCheck.value.trim(), logged_in_text: aText.value, user_selector: aSel[0].value.trim(), pass_selector: aSel[1].value.trim(), submit_selector: aSel[2].value.trim() });
+      }
+      const save = h('button', { type: 'submit', class: 'primary' }, 'Kaydet');
+      const form = h('form', { class: 'stack' },
+        h('div', { class: 'inline' }, field('Senaryo adı', nm), field('Aralık (sn)', iv), field('Zaman aşımı (ms)', to)),
+        h('div', { class: 'row' }, h('label', { class: 'check' }, en, 'Etkin'), h('label', { class: 'check' }, tls, 'TLS sertifikasını doğrula')),
+        authBox, h('h4', null, 'Adımlar'),
+        h('p', { class: 'muted small' }, 'Başlık, gövde ve değişkenler gibi gizli alanlar korunur; burada yalnızca görünen alanlar düzenlenir. Adımları ↑/↓ ile sıralayabilir veya silebilirsiniz. Adımlar değişirse sayfa değişikliği taban çizgisi yeniden başlar.'),
+        stepsBox, h('div', { class: 'row' }, save, h('button', { type: 'button', onclick: () => editBox.replaceChildren() }, 'Vazgeç')), emsg);
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault(); save.disabled = true; emsg.className = 'msg'; emsg.textContent = 'Kaydediliyor…';
+        const body = { name: nm.value, interval_sec: Number(iv.value), timeout_ms: Number(to.value), verify_tls: tls.checked, enabled: en.checked,
+          steps: items.map((it) => ({ from: it.from, name: it.name || '', method: it.method || '', url: it.url || '', expect_status: it.expect_status || '', expect_text: it.expect_text || '', max_ms: Number(it.max_ms || 0), selector: it.selector || '', value: it.value || '', key: it.key || '', login: !!it.login })) };
+        const a = getAuth(); if (a) body.auth = a;
+        try { await api('/api/scenarios/' + sc.id, { method: 'PUT', body }); render(); } catch (x) { emsg.className = 'msg error'; emsg.textContent = x.message; save.disabled = false; }
+      });
+      editBox.replaceChildren(h('section', null, h('h3', null, 'Senaryoyu düzenle: ' + sc.name), h('div', { class: 'panel' }, form)));
+      editBox.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    };
     const rows = list.map((sc) => h('tr', { class: 'click', onclick: () => showRuns(sc).catch((x) => { msg.className = 'msg error'; msg.textContent = x.message; }) },
       h('td', null, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'), sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'Sayfa değişti ' + ago(sc.last_changed_at))] : null,
         sc.auth && sc.auth.blocked ? [' ', pill('down', 'Giriş durduruldu')] : sc.auth && sc.auth.login_fails ? [' ', pill('warning', `Giriş hatası ${sc.auth.login_fails}/3`)] : null, h('div', { class: 'muted small' }, sc.asset)),
@@ -1061,6 +1133,7 @@
         h('button', { type: 'button', onclick: async (ev) => { ev.stopPropagation(); ev.target.disabled = true; msg.className = 'msg'; msg.textContent = 'Çalıştırılıyor…';
           try { const res = await api('/api/scenarios/' + sc.id + '/run', { method: 'POST' }); msg.textContent = ''; out.replaceChildren(stepResults(res)); showRuns(sc); }
           catch (x) { msg.className = 'msg error'; msg.textContent = x.message; } ev.target.disabled = false; } }, 'Şimdi çalıştır'),
+        h('button', { type: 'button', onclick: (ev) => { ev.stopPropagation(); editForm(sc); } }, 'Düzenle'),
         h('button', { type: 'button', class: 'danger', onclick: async (ev) => { ev.stopPropagation(); if (!confirm('Senaryo silinsin mi?')) return;
           try { await api('/api/scenarios/' + sc.id, { method: 'DELETE' }); render(); } catch (x) { alert(x.message); } } }, 'Sil')))));
     return h('div', null,
@@ -1070,7 +1143,8 @@
         h('section', null, h('h3', null, 'Tarayıcıdan kaydet'),
           h('p', { class: 'muted' }, 'Gerçek bir tarayıcıda (sunucuda çalışan, panelin içinde görünen) adımları siz yaparsınız; APP_MON kaydeder ve istediğiniz aralıkla yeniden oynatır. Her adımın süresini, sayfa yapısındaki değişiklikleri ve sayfanın eriştiği dış alan adlarını (topolojide görünür) ölçer.'),
           h('div', { class: 'panel' }, recorderPanel(assets))),
-        h('section', null, h('h3', null, 'HTTP adımlarıyla elle tanımla'), h('div', { class: 'panel' }, f, msg), out)),
+        h('details', { class: 'sect-details' }, h('summary', null, 'HTTP adımlarıyla elle tanımla'), h('div', { class: 'panel' }, f, msg), out),
+        editBox),
       h('section', null, table(['Senaryo', 'Adımlar', 'Aralık', 'Son çalışma', 'Son sonuç', ''], rows, 'Henüz senaryo tanımlanmadı.')),
       detail);
   }

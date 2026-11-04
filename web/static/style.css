@@ -330,3 +330,10 @@ td.actions button { margin-right: 6px; }
 .chg-list .del { color: var(--bad, #c0392b); }
 .chg-box button { align-self: flex-start; }
 .kpis { margin-bottom: 16px; }
+
+/* açılır bölüm ve adım düzenleme */
+.sect-details { margin: 14px 0; }
+.sect-details > summary { cursor: pointer; font-weight: 600; font-size: 1.05em; padding: 6px 0; }
+.sect-details[open] > summary { margin-bottom: 8px; }
+.step-edit { border: 1px solid var(--border, rgba(128,128,128,.3)); border-radius: 8px; padding: 10px 12px; margin: 0; }
+.step-edit legend { padding: 0 6px; font-weight: 600; }

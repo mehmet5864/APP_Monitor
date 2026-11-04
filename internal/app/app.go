@@ -122,6 +122,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/scenarios", s.guard("admin", s.listScenarios))
 	mux.HandleFunc("POST /api/scenarios", s.guard("admin", s.createScenario))
 	mux.HandleFunc("POST /api/scenarios/test", s.guard("admin", s.testScenario))
+	mux.HandleFunc("PUT /api/scenarios/{id}", s.guard("admin", s.updateScenario))
 	mux.HandleFunc("DELETE /api/scenarios/{id}", s.guard("admin", s.deleteScenario))
 	mux.HandleFunc("POST /api/scenarios/{id}/run", s.guard("admin", s.runScenarioNow))
 	mux.HandleFunc("POST /api/scenarios/{id}/retry-login", s.guard("admin", s.retryLogin))
