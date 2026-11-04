@@ -527,3 +527,30 @@ func (s *Server) scenarioShot(w http.ResponseWriter, r *http.Request, a Auth) {
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Write(jpeg)
 }
+
+// POST /api/recorder/analyze-login - giriş ekranını çözümler (alanlar, captcha, SSO...). Hiçbir veri gönderilmez.
+func (s *Server) analyzeLogin(w http.ResponseWriter, r *http.Request, a Auth) {
+	if !s.recorderOr503(w) {
+		return
+	}
+	var req struct {
+		URL string `json:"url"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(60 * time.Second))
+	select {
+	case browserSem <- struct{}{}:
+		defer func() { <-browserSem }()
+	case <-r.Context().Done():
+		return
+	}
+	res, err := browser.AnalyzeLogin(r.Context(), s.BrowserOptions, req.URL)
+	if err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "recorder.analyze_login", req.URL)
+	writeJSON(w, 200, res)
+}

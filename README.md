@@ -232,3 +232,7 @@ Topoloji sayfasındaki **Bağlantılar** tablosunda elle tanımlanmış her bağ
 ## Hesap kilitlenmesine karşı giriş koruması
 
 Otomatik giriş (form modu) art arda **3 kez** başarısız olursa (kullanıcı adı/parola hatalı, giriş sayfası hata veriyor, giriş tamamlanmıyor) APP_MON girişi **durdurur**: senaryo "Giriş bilgileri hatalı" hatasıyla başarısız görünür (alarm üretir) ve siteye bir daha giriş denemesi yapılmaz. Başarılı bir giriş (veya geçerli oturum) sayacı sıfırlar. Bir çalıştırmada en çok bir giriş denemesi yapılır. Parolayı değiştirdiyseniz Senaryolar sayfasında **Girişi yeniden dene** ile yeni bilgileri girin (`POST /api/scenarios/{id}/retry-login`); sayaç sıfırlanır. Kayıt başlatırken ve "Dene" butonunda tek deneme yapılır, sayaç etkilenmez. Migrasyon 010.
+
+## Giriş ekranı analizi
+
+Kayıt başlatırken "Bu sistemde kimlik doğrulama var" seçilince **Giriş ekranını analiz et** düğmesi giriş sayfasını açar (hiçbir veri göndermeden) ve hangi bilgilerin girilmesi gerektiğini açıklar: kullanıcı adı/parola alanları, giriş düğmesi, ek/zorunlu alanlar ve otomatik girişi engelleyebilecek durumlar (captcha, tek kullanımlık kod/2 adımlı doğrulama, SSO düğmeleri, iki adımlı giriş ekranı). Bulunan alan seçicileri boşsa "Alan seçicileri" kutularına önerilir (`POST /api/recorder/analyze-login`).

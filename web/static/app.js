@@ -681,6 +681,32 @@
     const out = h('div');
 
     let preAuth = null;
+    function loginReport(r) {
+      const ROLE = { username: 'Kullanıcı adı / e-posta', password: 'Parola', otp: 'Tek kullanımlık doğrulama kodu', captcha: 'Captcha', select: 'Seçim listesi', checkbox: 'Onay kutusu', other: 'Ek alan' };
+      const items = [], warns = [];
+      if (r.logged_in) warns.push('Bu adreste giriş formu bulunamadı: sayfa giriş gerektirmiyor, zaten giriş yapılmış ya da giriş ekranı farklı bir adreste olabilir. Giriş sayfasının adresini yazın.');
+      for (const f of r.fields) {
+        const base = `${ROLE[f.role] || f.role}: “${f.label || f.name || f.type}”${f.required ? ' (zorunlu)' : ''}`;
+        if (f.role === 'username') items.push(base + ' → yukarıdaki “Kullanıcı adı” kutusuna yazın.');
+        else if (f.role === 'password') items.push(base + ' → yukarıdaki “Parola” kutusuna yazın.');
+        else if (f.role === 'otp') warns.push(base + ': iki adımlı doğrulama isteniyor. APP_MON kod giremez; otomatik giriş çalışmaz. İzleme için 2 adımlı doğrulaması kapalı, yetkisi sınırlı bir test kullanıcısı isteyin.');
+        else if (f.role === 'captcha') warns.push(base + ': captcha otomatik geçilemez. İzleme için captcha’sız bir test kullanıcısı/adresi (veya güvenilir IP muafiyeti) isteyin.');
+        else if (f.role === 'select') items.push(base + (f.options && f.options.length ? ` (seçenekler: ${f.options.join(', ')})` : '') + ' → APP_MON bu alanı doldurmaz, varsayılan seçenek kalır. Giriş için belirli bir seçim gerekiyorsa “Kayıttaki adımlar giriş olarak çalışsın” yöntemini kullanın.');
+        else if (f.role === 'checkbox') items.push(base + ' → APP_MON işaretlemez (ör. “beni hatırla” gerekmez).');
+        else items.push(base + ' → APP_MON yalnızca kullanıcı adı ve parolayı doldurur; bu alan zorunluysa (ör. şirket/firma kodu) otomatik giriş başarısız olur. Bu durumda “Kayıttaki adımlar giriş olarak çalışsın” yöntemini kullanın.');
+      }
+      if (r.captcha && !r.fields.some((f) => f.role === 'captcha')) warns.push('Sayfada captcha (robot doğrulaması) görünüyor: otomatik giriş çalışmayabilir.');
+      if (r.sso && r.sso.length) warns.push('Harici giriş düğmeleri var (' + r.sso.join(', ') + '). Bunlar otomatik doldurulamaz; kullanıcı adı/parola formu da varsa onu kullanın.');
+      if (r.no_password && !r.logged_in) warns.push('Parola alanı görünmüyor: önce kullanıcı adı, sonra parola isteyen iki adımlı bir giriş ekranı olabilir. Bu durumda “Kayıttaki adımlar giriş olarak çalışsın” yöntemi daha uygundur.');
+      const need = r.fields.filter((f) => f.role === 'username' || f.role === 'password').map((f) => ROLE[f.role]);
+      return h('div', { class: 'panel stack' },
+        h('b', null, 'Giriş ekranı analizi' + (r.title ? ': ' + r.title : '')),
+        need.length ? h('p', null, 'Girmeniz gerekenler: ', h('b', null, need.join(' ve ')), r.submit ? ` · Giriş düğmesi: “${r.submit}”` : '') : null,
+        items.length ? h('ul', { class: 'small' }, items.map((t) => h('li', null, t))) : null,
+        warns.length ? h('div', { class: 'msg error' }, h('b', null, 'Dikkat'), h('ul', { class: 'small' }, warns.map((t) => h('li', null, t)))) : null,
+        !warns.length && need.length ? h('p', { class: 'msg ok small' }, 'Standart bir kullanıcı adı/parola formu: otomatik giriş çalışmalı. Alan seçicileri bulunduysa aşağıda önceden dolduruldu.') : null,
+        h('p', { class: 'muted small' }, 'Çözümlenen adres: ' + r.url));
+    }
     function idle() {
       preAuth = null;
       const url = h('input', { id: 'rec-url', placeholder: 'http://host.docker.internal:43130/', value: '' });
@@ -690,7 +716,23 @@
       const aPass = h('input', { id: 'ra-pass', type: 'password', autocomplete: 'new-password', maxlength: '300' });
       const aText = h('input', { id: 'ra-text', maxlength: '200', placeholder: 'ör. Çıkış yap' });
       const aSel = ['ra-usel', 'ra-psel', 'ra-ssel'].map((id, i) => h('input', { id, placeholder: ['ör. #email', 'ör. input[name=pw]', 'ör. button[type=submit]'][i] }));
+      const anaOut = h('div', { class: 'stack' });
+      const anaBtn = h('button', { type: 'button' }, 'Giriş ekranını analiz et');
+      anaBtn.addEventListener('click', async () => {
+        if (!url.value.trim()) { anaOut.replaceChildren(h('p', { class: 'msg error' }, 'Önce başlangıç adresini (giriş sayfası) yazın.')); return; }
+        anaBtn.disabled = true; anaOut.replaceChildren(h('p', { class: 'muted small' }, 'Sayfa açılıyor ve çözümleniyor…'));
+        try {
+          const r = await api('/api/recorder/analyze-login', { method: 'POST', body: { url: url.value.trim() } });
+          anaOut.replaceChildren(loginReport(r));
+          const u = r.fields.find((x) => x.role === 'username' && x.selector), p = r.fields.find((x) => x.role === 'password' && x.selector);
+          if (u && !aSel[0].value) aSel[0].value = u.selector;
+          if (p && !aSel[1].value) aSel[1].value = p.selector;
+          if (r.submit_selector && !aSel[2].value) aSel[2].value = r.submit_selector;
+        } catch (err) { anaOut.replaceChildren(h('p', { class: 'msg error' }, err.message)); }
+        anaBtn.disabled = false;
+      });
       const aBody = h('div', { class: 'stack', hidden: true },
+        h('div', { class: 'row' }, anaBtn, h('span', { class: 'muted small' }, 'Giriş sayfasını açar, hangi bilgilerin gerektiğini ve otomatik girişi engelleyebilecek şeyleri (captcha, 2 adımlı doğrulama, SSO) gösterir. Hiçbir veri gönderilmez.')), anaOut,
         h('p', { class: 'muted small' }, 'Giriş, kayıt başlamadan önce APP_MON tarafından yapılır ve kayda adım olarak eklenmez; kayıt oturum açılmış sayfadan başlar. Senaryo kaydedilirken aynı bilgiler otomatik giriş olarak saklanır (parola veritabanında düz metindir; mümkünse yetkisi sınırlı bir test kullanıcısı kullanın).'),
         h('div', { class: 'inline' }, field('Kullanıcı adı', aUser), field('Parola', aPass), field('Girişliyken görünen metin (isteğe bağlı)', aText)),
         h('details', { class: 'adv' }, h('summary', null, 'Alan seçicileri (otomatik bulunamazsa)'),

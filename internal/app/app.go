@@ -128,6 +128,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/scenarios/{id}/ack-changes", s.guard("admin", s.ackScenarioChanges))
 	mux.HandleFunc("GET /api/scenarios/{id}/runs", s.guard("admin", s.listScenarioRuns))
 	mux.HandleFunc("POST /api/recorder", s.guard("admin", s.recorderStart))
+	mux.HandleFunc("POST /api/recorder/analyze-login", s.guard("admin", s.analyzeLogin))
 	mux.HandleFunc("GET /api/recorder/{id}", s.guard("admin", s.recorderState))
 	mux.HandleFunc("GET /api/recorder/{id}/frame", s.guard("admin", s.recorderFrame))
 	mux.HandleFunc("POST /api/recorder/{id}/input", s.guard("admin", s.recorderInput))
