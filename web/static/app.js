@@ -63,6 +63,29 @@
       h('tbody', null, body)));
   }
 
+  // Liste filtreleri: durum modül düzeyinde tutulur (10 sn'lik otomatik yenilemede kaybolmaz).
+  const FILTERS = { assetler: { q: '', status: '', kind: '', coll: '' }, probelar: { q: '', type: '', res: '' } };
+  function filterBar(state, specs, tbl, total) {
+    const count = h('span', { class: 'muted small fcount', role: 'status' });
+    const apply = () => {
+      let n = 0;
+      for (const tr of tbl.querySelectorAll('tbody tr[data-search]')) {
+        let ok = !state.q || tr.dataset.search.includes(state.q.toLowerCase());
+        for (const sp of specs) if (ok && sp.type === 'select' && state[sp.key] && tr.dataset[sp.key] !== state[sp.key]) ok = false;
+        tr.hidden = !ok; if (ok) n++;
+      }
+      count.textContent = n === total ? `${total} kayıt` : `${n} / ${total} kayıt`;
+    };
+    const ctrls = specs.map((sp) => {
+      const el = sp.type === 'select' ? select(null, [['', sp.label + ': tümü']].concat(sp.options), state[sp.key]) : h('input', { type: 'search', placeholder: sp.label, value: state[sp.key], 'aria-label': sp.label });
+      el.addEventListener('input', () => { state[sp.key] = el.value; apply(); });
+      return el;
+    });
+    const reset = h('button', { type: 'button', onclick: () => { for (const sp of specs) state[sp.key] = ''; ctrls.forEach((c) => { c.value = ''; }); apply(); } }, 'Temizle');
+    setTimeout(apply, 0);
+    return h('div', { class: 'filters' }, ctrls, reset, count);
+  }
+
   function field(label, input) { return h('label', null, label, input); }
   function select(id, options, value) {
     const el = h('select', { id }, options.map(([v, t]) => h('option', { value: v }, t)));
@@ -419,7 +442,8 @@
   async function viewAssetler() {
     await refreshHeader();
     const assets = await api('/api/assets');
-    const rows = assets.map((a) => h('tr', { class: 'click' + (a.id === selectedAsset ? ' sel' : ''), tabindex: '0', 'data-id': a.id },
+    const rows = assets.map((a) => h('tr', { class: 'click' + (a.id === selectedAsset ? ' sel' : ''), tabindex: '0', 'data-id': a.id,
+      'data-search': [a.name, KIND[a.kind], a.kind, STATUS[a.status], LANG[a.language]].join(' ').toLowerCase(), 'data-status': a.status, 'data-kind': a.kind === 'url' ? 'website' : a.kind, 'data-coll': a.collection },
       h('td', null, h('span', { class: 'kl' }, kindIcon(a.kind, 30), h('b', null, a.name))),
       h('td', null, KIND[a.kind] || a.kind),
       h('td', null, LANG[a.language]),
@@ -444,7 +468,12 @@
       kpi('Erişilemiyor', String(cnt('down')), 'sorunlu', null, cnt('down') ? 'bad' : ''),
       kpi('Çevrimdışı', String(cnt('offline')), 'veri gelmiyor', null, cnt('offline') ? 'bad' : ''),
       kpi('Ort. CPU', avgCpu == null ? '—' : fmt(avgCpu) + '%', cpus.length + ' sunucu', null, avgCpu > 90 ? 'bad' : ''));
-    const wrap = h('div', { style: null }, h('section', null, h('h2', null, 'Assetler'), sum, t), detail);
+    const kinds = [...new Set(assets.map((a) => (a.kind === 'url' ? 'website' : a.kind)))].map((k) => [k, KIND[k] || k]);
+    const fb = filterBar(FILTERS.assetler, [{ key: 'q', label: 'Ara (ad, tür, durum…)', type: 'text' },
+      { key: 'status', label: 'Durum', type: 'select', options: Object.entries(STATUS) },
+      { key: 'kind', label: 'Tür', type: 'select', options: kinds },
+      { key: 'coll', label: 'Toplama', type: 'select', options: [['agent', 'Agent'], ['agentless', 'Agent\'sız']] }], t, assets.length);
+    const wrap = h('div', { style: null }, h('section', null, h('h2', null, 'Assetler'), sum, fb, t), detail);
     const sel = assets.find((a) => a.id === selectedAsset);
     if (sel) await fillDetail(detail, sel);
     return wrap;
@@ -609,12 +638,61 @@
         render();
       } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
     });
-    const rows = probes.map((p) => h('tr', null,
+    const editBox = h('div');
+    const editProbe = (p) => {
+      const o = p.options || {}, emsg = h('p', { class: 'msg', role: 'status' });
+      const inp = (v, extra) => h('input', { value: v == null ? '' : String(v), ...(extra || {}) });
+      const target = inp(p.target, { required: true, maxlength: '1000' }), iv = inp(p.interval_sec, { type: 'number', min: '5' }), to = inp(p.timeout_ms, { type: 'number', min: '100', max: '60000' });
+      const en = h('input', { type: 'checkbox' }); en.checked = p.enabled;
+      const extra = []; let collect = () => ({});
+      if (p.type === 'http') {
+        const m = select(null, ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].map((x) => [x, x]), p.http_method || 'GET');
+        const st = inp(p.expect_status, { placeholder: 'ör. 200 veya 200-299' }), tx = inp(p.expect_text, { maxlength: '200' });
+        const hd = h('textarea', { rows: '3', placeholder: (p.header_names && p.header_names.length ? 'Mevcut: ' + p.header_names.join(', ') + ' (değerler gizli). ' : '') + 'Boş bırakırsanız başlıklar aynı kalır; yazarsanız hepsinin yerini alır. Her satır: Ad: değer', spellcheck: 'false' });
+        const bd = h('textarea', { rows: '3', placeholder: 'Boş bırakırsanız gövde aynı kalır', spellcheck: 'false' });
+        const tls = h('input', { type: 'checkbox' }); tls.checked = p.verify_tls !== false;
+        const fo = h('input', { type: 'checkbox' }); fo.checked = p.follow_redirects !== false;
+        extra.push(h('div', { class: 'inline' }, field('Yöntem', m), field('Beklenen durum', st), field('Beklenen metin', tx)), field('Ek başlıklar', hd), field('Gövde', bd),
+          h('div', { class: 'row' }, h('label', { class: 'check' }, tls, 'TLS sertifikasını doğrula'), h('label', { class: 'check' }, fo, 'Yönlendirmeleri izle')));
+        collect = () => { const r = { http_method: m.value, expect_status: st.value, expect_text: tx.value, verify_tls: tls.checked, follow_redirects: fo.checked };
+          if (hd.value.trim()) r.headers = parseHeaders(hd.value); if (bd.value) r.body = bd.value; return r; };
+      } else if (p.type === 'icmp') { const c = inp(o.count || 3, { type: 'number', min: '1', max: '10' }); extra.push(field('Paket sayısı', c)); collect = () => ({ options: { count: Number(c.value) || 3 } }); }
+      else if (p.type === 'snmp') {
+        const cm = h('input', { type: 'password', autocomplete: 'new-password', placeholder: p.has_community ? 'değiştirmek için yazın (boş = aynı)' : 'public' }), oid = inp(o.oid, { list: 'pe-oids' }), ver = select(null, [['2c', 'v2c'], ['1', 'v1']], o.snmp_version || '2c'), ex = inp(o.expect);
+        extra.push(h('datalist', { id: 'pe-oids' }, SNMP_OIDS.map(([v, t]) => h('option', { value: v }, t))), h('div', { class: 'inline' }, field('Topluluk adı', cm), field('OID', oid), field('Sürüm', ver), field('Yanıtta aranacak metin', ex)));
+        collect = () => ({ options: { community: cm.value, oid: oid.value.trim(), snmp_version: ver.value, expect: ex.value } });
+      } else if (p.type === 'dns') {
+        const rec = select(null, ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS'].map((x) => [x, x]), o.record || 'A'), sv = inp(o.server, { placeholder: 'isteğe bağlı' }), ex = inp(o.expect);
+        extra.push(h('div', { class: 'inline' }, field('Kayıt türü', rec), field('DNS sunucusu', sv), field('Yanıtta aranacak metin', ex)));
+        collect = () => ({ options: { record: rec.value, server: sv.value.trim(), expect: ex.value } });
+      } else if (p.type === 'tcp' || p.type === 'udp') {
+        const sd = inp(o.send), ex = inp(o.expect);
+        extra.push(h('div', { class: 'inline' }, field('Gönderilecek metin', sd), field('Yanıtta aranacak metin', ex)));
+        collect = () => ({ options: { send: sd.value, expect: ex.value } });
+      } else if (p.type === 'tls') {
+        const v = h('input', { type: 'checkbox' }); v.checked = p.verify_tls !== false;
+        extra.push(h('label', { class: 'check' }, v, 'Sertifika zincirini doğrula')); collect = () => ({ verify_tls: v.checked });
+      }
+      const save = h('button', { type: 'submit', class: 'primary' }, 'Kaydet');
+      const form = h('form', { class: 'stack' },
+        h('p', { class: 'muted small' }, `Tür: ${p.type.toUpperCase()} · Asset: ${p.asset} (tür ve asset değiştirilemez; gerekirse silip yeniden ekleyin)`),
+        h('div', { class: 'inline' }, field('Hedef', target), field('Aralık (sn)', iv), field('Zaman aşımı (ms)', to)),
+        h('label', { class: 'check' }, en, 'Etkin'), ...extra,
+        h('div', { class: 'row' }, save, h('button', { type: 'button', onclick: () => editBox.replaceChildren() }, 'Vazgeç')), emsg);
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault(); save.disabled = true; emsg.className = 'msg'; emsg.textContent = 'Kaydediliyor…';
+        try { await api('/api/probes/' + p.id, { method: 'PUT', body: { target: target.value, interval_sec: Number(iv.value), timeout_ms: Number(to.value), enabled: en.checked, ...collect() } }); render(); }
+        catch (x) { emsg.className = 'msg error'; emsg.textContent = x.message; save.disabled = false; }
+      });
+      editBox.replaceChildren(h('section', null, h('h3', null, 'Probe\'u değiştir: ' + p.asset), h('div', { class: 'panel' }, form)));
+      editBox.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    };
+    const rows = probes.map((p) => h('tr', { 'data-search': [p.asset, p.type, p.target, p.last_error].join(' ').toLowerCase(), 'data-type': p.type, 'data-res': !p.last_run ? 'wait' : p.last_error ? 'fail' : 'ok' },
       h('td', null, h('b', null, p.asset)), h('td', null, p.type.toUpperCase()),
       h('td', { class: 'mono small' }, p.target, p.type === 'http' ? h('div', { class: 'muted' }, probeOpts(p)) : p.options ? h('div', { class: 'muted' }, optSummary(p)) : null), h('td', { class: 'mono' }, p.interval_sec + ' sn'),
       h('td', { class: 'mono small' }, ago(p.last_run)),
       h('td', null, !p.last_run ? pill('unknown', 'Bekliyor') : p.last_error ? h('span', { class: 'error small' }, p.last_error) : pill('up', 'Başarılı')),
-      h('td', null, h('button', { type: 'button', class: 'danger', onclick: async () => { try { await api('/api/probes/' + p.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil'))));
+      h('td', null, h('span', { class: 'row' }, h('button', { type: 'button', onclick: () => editProbe(p) }, 'Değiştir'), h('button', { type: 'button', class: 'danger', onclick: async () => { try { await api('/api/probes/' + p.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil')))));
     const types = {}; probes.forEach((p) => { types[p.type] = (types[p.type] || 0) + 1; });
     const pSum = h('div', { class: 'kpis' },
       kpi('Probe sayısı', String(probes.length), 'tanımlı', null, ''),
@@ -624,7 +702,14 @@
         h('p', { class: 'muted' }, 'Sunucunuza hiçbir şey kurmadan HTTP, TCP, ICMP (ping), SNMP, DNS, TLS sertifikası, UDP, NTP ve PostgreSQL erişilebilirliğini ve gecikmesini izler. Yeni bir asset adı yazarsanız lisanstan bir asset düşer.'),
         h('p', { class: 'muted' }, 'APP_MON Docker içinde çalışıyorsa localhost konteynerin kendisidir. Windows veya Mac\'teki bir uygulamayı izlemek için localhost yerine host.docker.internal yazın (ör. host.docker.internal:43130).'),
         h('div', { class: 'panel' }, f, msg)),
-      h('section', null, table(['Asset', 'Tür', 'Hedef', 'Aralık', 'Son çalışma', 'Son sonuç', ''], rows, 'Henüz probe tanımlanmadı.')));
+      h('section', null, (() => {
+        const t = table(['Asset', 'Tür', 'Hedef', 'Aralık', 'Son çalışma', 'Son sonuç', ''], rows, 'Henüz probe tanımlanmadı.');
+        const fb = filterBar(FILTERS.probelar, [{ key: 'q', label: 'Ara (asset, hedef, hata…)', type: 'text' },
+          { key: 'type', label: 'Tür', type: 'select', options: [...new Set(probes.map((p) => p.type))].map((x) => [x, x.toUpperCase()]) },
+          { key: 'res', label: 'Sonuç', type: 'select', options: [['ok', 'Başarılı'], ['fail', 'Hatalı'], ['wait', 'Bekliyor']] }], t, probes.length);
+        return h('div', null, fb, t);
+      })()),
+      editBox);
   }
 
 
@@ -1359,6 +1444,7 @@
           h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Renk paleti'), palBox),
           h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Vurgu rengi (paletin rengini değiştirir)'), accentBox),
           h('p', { class: 'muted small' }, 'Bu tercihler yalnızca bu tarayıcıda saklanır. "Sistem" işletim sisteminizin açık/koyu ayarını izler.'))),
+      window.APM && window.APM.reports ? window.APM.reports.section() : null,
       h('div', { class: 'grid' },
         h('section', null, h('h3', null, 'Sistem'), h('div', { class: 'panel facts' },
           fact('Mod', info.mode === 'saas' ? 'SaaS' : 'On-premise'),
@@ -1788,7 +1874,7 @@
   // ---- Oturum ----
   function showApp() {
     $('#login').hidden = true; $('#app').hidden = false;
-    buildNav(); render();
+    buildNav(); render(); refreshBell();
   }
   function logout() {
     key = '';
@@ -1814,6 +1900,87 @@
     const typing = document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
     if (key && !$('#app').hidden && AUTO.has(current()) && !typing && !document.querySelector('.editing-row')) render();
   }, 10000);
+
+  // ---- Üst çubuk araçları: uyarı zili, sayfada arama, yazdırma ----
+  const bell = $('#bell'), pop = $('#bell-pop');
+  async function refreshBell() {
+    if (!key || $('#app').hidden) return;
+    try {
+      const o = await api('/api/overview');
+      const n = $('#bell-n'); n.textContent = o.open_alerts > 99 ? '99+' : String(o.open_alerts); n.hidden = !o.open_alerts;
+      bell.classList.toggle('crit', o.critical > 0);
+      bell.setAttribute('aria-label', o.open_alerts ? `${o.open_alerts} açık uyarı` : 'Açık uyarı yok');
+    } catch (e) { /* sessizce geç */ }
+  }
+  async function toggleBell(force) {
+    const open = force == null ? pop.hidden : force;
+    if (!open) { pop.hidden = true; bell.setAttribute('aria-expanded', 'false'); return; }
+    pop.hidden = false; bell.setAttribute('aria-expanded', 'true');
+    pop.replaceChildren(h('p', { class: 'muted small pad' }, 'Yükleniyor…'));
+    try {
+      const list = await api('/api/alerts?state=open');
+      pop.replaceChildren(h('div', { class: 'pop-head' }, h('b', null, 'Açık uyarılar'), h('span', { class: 'muted small' }, list.length + ' alarm')),
+        list.length ? h('ul', { class: 'pop-list' }, list.slice(0, 8).map((a) => h('li', null, pill(a.severity, SEV[a.severity]), h('div', null, h('b', null, a.rule), h('div', { class: 'muted small' }, `${a.asset} · ${ago(a.opened_at)}`))))) : h('p', { class: 'muted small pad' }, 'Açık uyarı yok. Her şey yolunda.'),
+        h('a', { class: 'pop-foot', href: '#alarmlar', onclick: () => toggleBell(false) }, list.length > 8 ? `Tümünü gör (+${list.length - 8})` : 'Alarmlar sayfasına git'));
+    } catch (e) { pop.replaceChildren(h('p', { class: 'error small pad' }, e.message)); }
+  }
+  bell.addEventListener('click', (e) => { e.stopPropagation(); toggleBell(); });
+  document.addEventListener('click', (e) => { if (!pop.hidden && !pop.contains(e.target)) toggleBell(false); });
+  setInterval(refreshBell, 15000);
+
+  // Sayfa içi arama: görünür metinde eşleşenleri işaretler (yalnızca #view veya açık rapor önizlemesi içinde).
+  const fbar = $('#findbar'), finput = $('#find-input'), fcount = $('#find-count');
+  let marks = [], mi = -1;
+  function clearMarks() {
+    for (const m of document.querySelectorAll('mark.find')) { const p = m.parentNode; m.replaceWith(document.createTextNode(m.textContent)); p.normalize(); }
+    marks = []; mi = -1;
+  }
+  function doFind() {
+    clearMarks();
+    const q = finput.value.trim().toLowerCase();
+    if (q.length < 2) { fcount.textContent = ''; return; }
+    const root = $('#report-modal') && !$('#report-modal').hidden ? $('#report-body') : $('#view');
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => (n.parentElement && !/^(SCRIPT|STYLE|TEXTAREA|OPTION|MARK)$/.test(n.parentElement.tagName) && n.nodeValue.toLowerCase().includes(q) && n.parentElement.offsetParent !== null ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT) });
+    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const n of nodes) {
+      const txt = n.nodeValue, low = txt.toLowerCase(), frag = document.createDocumentFragment(); let i = 0, at;
+      while ((at = low.indexOf(q, i)) !== -1) {
+        if (at > i) frag.append(txt.slice(i, at));
+        const m = h('mark', { class: 'find' }, txt.slice(at, at + q.length)); frag.append(m); marks.push(m); i = at + q.length;
+      }
+      frag.append(txt.slice(i)); n.replaceWith(frag);
+    }
+    fcount.textContent = marks.length ? '' : 'Sonuç yok';
+    if (marks.length) stepFind(1);
+  }
+  function stepFind(d) {
+    if (!marks.length) return;
+    if (marks[mi]) marks[mi].classList.remove('cur');
+    mi = (mi + d + marks.length) % marks.length;
+    marks[mi].classList.add('cur'); marks[mi].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    fcount.textContent = `${mi + 1} / ${marks.length}`;
+  }
+  function toggleFind(on) {
+    fbar.hidden = !on;
+    if (on) { finput.focus(); finput.select(); } else { clearMarks(); finput.value = ''; fcount.textContent = ''; }
+  }
+  $('#find-btn').addEventListener('click', () => toggleFind(fbar.hidden));
+  $('#find-close').addEventListener('click', () => toggleFind(false));
+  $('#find-next').addEventListener('click', () => stepFind(1));
+  $('#find-prev').addEventListener('click', () => stepFind(-1));
+  let ft = 0; finput.addEventListener('input', () => { clearTimeout(ft); ft = setTimeout(doFind, 200); });
+  finput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); } if (e.key === 'Escape') toggleFind(false); });
+  document.addEventListener('keydown', (e) => {
+    const typing = document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (e.key === '/' && !typing && !$('#app').hidden) { e.preventDefault(); toggleFind(true); }
+    if (e.key === 'Escape') toggleBell(false);
+  });
+  // Otomatik yenileme sayfayı yeniden çizince işaretler silinir; aramayı yeniden uygula.
+  new MutationObserver(() => { if (!fbar.hidden && finput.value.trim().length >= 2 && !document.querySelector('mark.find')) { clearTimeout(ft); ft = setTimeout(doFind, 150); } }).observe($('#view'), { childList: true });
+  $('#print-btn').addEventListener('click', () => { clearMarks(); window.print(); });
+
+  // Rapor modülü (reports.js) için paylaşılan yardımcılar
+  window.APM = { h, s, api, kpi, availChart, alertsChart, rankBars, pill, fmt, ago, table, kindIcon, KIND, STATUS, SEV, LANG, clearMarks, toggleFind, doFind };
 
   if (key) { api('/api/overview').then(showApp).catch(() => { $('#login').hidden = false; }); } else { $('#login').hidden = false; }
 })();

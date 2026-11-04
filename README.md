@@ -240,3 +240,10 @@ Kayıt başlatırken "Bu sistemde kimlik doğrulama var" seçilince **Giriş ekr
 ## Senaryo düzenleme
 
 Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarları, adım alanları (ad, adres, yöntem, beklenen durum/metin, en çok süre, seçici…), adım sırası/silme ve (tarayıcı senaryolarında) kimlik doğrulama ayarları değiştirilebilir (`PUT /api/scenarios/{id}`). Başlık, gövde, değişken ve gizli değerler korunur; parola alanı boş bırakılırsa eski parola kalır. Adımlar değişirse sayfa değişikliği taban çizgisi sıfırlanır; kimlik bilgileri değişirse kayıtlı oturum silinir. "HTTP adımlarıyla elle tanımla" bölümü varsayılan olarak kapalıdır, başlığına tıklayınca açılır.
+
+## yama18 — filtreler, uyarı zili, sayfa içi arama/çıktı, raporlar, probe düzenleme
+
+- **Assetler ve Probe'lar listeleri**: arama + durum/tür/koleksiyon/sonuç filtreleri, "x / y kayıt" sayacı.
+- **Probe değiştir** (`PUT /api/probes/{id}`): aralık, zaman aşımı, hedef, etkin, HTTP yöntemi/durum/metin/başlık/gövde, TLS ve yönlendirme. Boş bırakılan hedef/başlık/gövde/SNMP community mevcut değeri korur. Tür ve asset değişmez.
+- **Üst çubuk**: sayfa içi arama (`/` kısayolu, vurgulu eşleşmeler), yazdır (her sayfa, `@media print`), sağ üstte açık alarm sayısıyla **uyarı zili** (açılır liste, 15 sn'de bir yenilenir).
+- **Ayarlar > Raporlar** (önizlemeli, yazdır/PDF): Yönetici özeti (executive), Erişilebilirlik, Alarmlar, Envanter, Probe'lar, Topoloji, Denetim kaydı.

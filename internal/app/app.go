@@ -118,6 +118,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/topology/edges/{id}", s.guard("admin", s.deleteEdge))
 	mux.HandleFunc("GET /api/probes", s.guard("admin", s.listProbes))
 	mux.HandleFunc("POST /api/probes", s.guard("admin", s.createProbe))
+	mux.HandleFunc("PUT /api/probes/{id}", s.guard("admin", s.updateProbe))
 	mux.HandleFunc("DELETE /api/probes/{id}", s.guard("admin", s.deleteProbe))
 	mux.HandleFunc("GET /api/scenarios", s.guard("admin", s.listScenarios))
 	mux.HandleFunc("POST /api/scenarios", s.guard("admin", s.createScenario))

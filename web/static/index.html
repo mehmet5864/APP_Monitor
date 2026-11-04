@@ -26,6 +26,12 @@
     <div class="brand">APP_MON <span id="mode" class="tag"></span></div>
     <nav id="nav" aria-label="Ana menü"></nav>
     <div class="top-right">
+    <button id="find-btn" type="button" class="icon-btn" title="Sayfada ara ( / )" aria-label="Sayfada ara"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
+    <button id="print-btn" type="button" class="icon-btn" title="Bu sayfayı yazdır / PDF olarak kaydet" aria-label="Yazdır"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2"/><rect x="6" y="14" width="12" height="7"/></svg></button>
+    <div class="bell-wrap">
+      <button id="bell" type="button" class="icon-btn" aria-label="Açık uyarı yok" aria-haspopup="true" aria-expanded="false" title="Uyarılar"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg><span id="bell-n" class="bell-n" hidden></span></button>
+      <div id="bell-pop" class="bell-pop" hidden></div>
+    </div>
     <div class="meter-wrap" title="Lisanslı asset sayısı">
       <span class="mono small" id="meter-label"></span>
       <div class="meter"><div id="meter-fill"></div></div>
@@ -33,8 +39,22 @@
     <button id="logout" type="button">Çıkış</button>
     </div>
   </header>
+  <div id="findbar" class="findbar" hidden>
+    <input id="find-input" type="search" placeholder="Bu sayfada ara…" aria-label="Sayfada ara" autocomplete="off">
+    <span id="find-count" class="muted small" role="status"></span>
+    <button id="find-prev" type="button" aria-label="Önceki">↑</button><button id="find-next" type="button" aria-label="Sonraki">↓</button>
+    <button id="find-close" type="button" aria-label="Kapat">✕</button>
+  </div>
   <main id="view"></main>
+  <div id="report-modal" class="report-modal" hidden>
+    <div class="report-bar">
+      <b id="report-title"></b>
+      <span class="row"><button id="report-find" type="button">Ara</button><button id="report-print" type="button" class="primary">Yazdır / PDF</button><button id="report-close" type="button">Kapat</button></span>
+    </div>
+    <div id="report-body" class="report-scroll"></div>
+  </div>
 </div>
 <script src="/app.js"></script>
+<script src="/reports.js"></script>
 </body>
 </html>

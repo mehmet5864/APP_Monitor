@@ -857,3 +857,131 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	writeJSON(w, 200, list)
 }
+
+// updateProbe kayıtlı bir probe'u değiştirir. Tür ve asset sabittir. Gizli alanlar (başlıklar, gövde, SNMP topluluğu,
+// parola içeren hedef) istekte yoksa/boşsa korunur.
+func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var req struct {
+		Target          *string            `json:"target"`
+		IntervalSec     int                `json:"interval_sec"`
+		TimeoutMS       int                `json:"timeout_ms"`
+		Enabled         *bool              `json:"enabled"`
+		HTTPMethod      string             `json:"http_method"`
+		Headers         *map[string]string `json:"headers"`
+		Body            *string            `json:"body"`
+		ExpectStatus    string             `json:"expect_status"`
+		ExpectText      string             `json:"expect_text"`
+		VerifyTLS       *bool              `json:"verify_tls"`
+		FollowRedirects *bool              `json:"follow_redirects"`
+		Options         *probe.Options     `json:"options"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	var typ, target, method, body, expStatus, expText string
+	var interval, timeout int
+	var enabled, verify, follow bool
+	var headersRaw, optsRaw []byte
+	err := s.DB.QueryRowContext(r.Context(),
+		`SELECT type, target, interval_sec, timeout_ms, enabled, http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects, options
+		 FROM probes WHERE id = $1 AND tenant_id = $2`, id, a.TenantID).
+		Scan(&typ, &target, &interval, &timeout, &enabled, &method, &headersRaw, &body, &expStatus, &expText, &verify, &follow, &optsRaw)
+	if err != nil {
+		fail(w, 404, "probe bulunamadı")
+		return
+	}
+	if req.Target != nil {
+		t := strings.TrimSpace(*req.Target)
+		if t != "" && t != maskTarget(typ, target) { // maskelenmiş hedef değişmedi demektir
+			target = t
+		}
+	}
+	if err := validateTarget(typ, target); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	if req.IntervalSec != 0 {
+		interval = req.IntervalSec
+	}
+	if req.TimeoutMS != 0 {
+		timeout = req.TimeoutMS
+	}
+	if interval < 5 || timeout < 100 || timeout > 60000 {
+		fail(w, 400, "interval_sec en az 5, timeout_ms 100 ile 60000 arasında olmalı")
+		return
+	}
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if req.VerifyTLS != nil {
+		verify = *req.VerifyTLS
+	}
+	headers := map[string]string{}
+	json.Unmarshal(headersRaw, &headers)
+	if typ == "http" {
+		if req.HTTPMethod != "" {
+			method = strings.ToUpper(strings.TrimSpace(req.HTTPMethod))
+		}
+		if req.Headers != nil && len(*req.Headers) > 0 {
+			headers = *req.Headers
+		}
+		if req.Body != nil && *req.Body != "" {
+			body = *req.Body
+		}
+		expStatus, expText = strings.TrimSpace(req.ExpectStatus), req.ExpectText
+		if req.FollowRedirects != nil {
+			follow = *req.FollowRedirects
+		}
+		switch {
+		case !probe.ValidMethod(method):
+			fail(w, 400, "http_method "+strings.Join(probe.AllowedMethods, ", ")+" olmalı")
+			return
+		case len(body) > 8192:
+			fail(w, 400, "gövde en fazla 8192 karakter olabilir")
+			return
+		case len(expText) > 200:
+			fail(w, 400, "beklenen metin en fazla 200 karakter olabilir")
+			return
+		case method == "HEAD" && expText != "":
+			fail(w, 400, "HEAD yanıtında gövde olmadığı için metin doğrulaması yapılamaz")
+			return
+		}
+		if err := probe.ValidateStatusSpec(expStatus); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+		if err := probe.ValidateHeaders(headers); err != nil {
+			fail(w, 400, err.Error())
+			return
+		}
+	}
+	var opts probe.Options
+	json.Unmarshal(optsRaw, &opts)
+	if req.Options != nil && typ != "http" && typ != "postgres" {
+		n := *req.Options
+		if typ == "snmp" && n.Community == "" {
+			n.Community = opts.Community // boş bırakılırsa eski topluluk adı korunur
+		}
+		opts = n
+	}
+	if err := validateOptions(typ, &opts); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	hj, _ := json.Marshal(headers)
+	oj, _ := json.Marshal(opts)
+	if _, err := s.DB.ExecContext(r.Context(),
+		`UPDATE probes SET target = $1, interval_sec = $2, timeout_ms = $3, enabled = $4, http_method = $5, headers = $6, body = $7,
+		        expect_status = $8, expect_text = $9, verify_tls = $10, follow_redirects = $11, options = $12 WHERE id = $13 AND tenant_id = $14`,
+		target, interval, timeout, enabled, method, string(hj), body, expStatus, expText, verify, follow, string(oj), id, a.TenantID); err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "probe.update", typ+" "+maskTarget(typ, target))
+	w.WriteHeader(http.StatusNoContent)
+}
