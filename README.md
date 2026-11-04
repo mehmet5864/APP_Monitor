@@ -249,3 +249,4 @@ Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarl
 - **Ayarlar > Raporlar** (önizlemeli, yazdır/PDF): Yönetici özeti (executive), Erişilebilirlik, Alarmlar, Envanter, Probe'lar, Topoloji, Denetim kaydı.
 
 - **Dashboard "Kontrol edilen sayfalar"**: kartlar sürükle-bırak ile sıralanır; sağ tık veya × ile dashboard'dan kaldırılır ("Tümünü geri getir" bağlantısı). Sıra/gizleme tarayıcıda (localStorage) saklanır; senaryo silinmez.
+- **Uygulama haritası**: bir uygulama seçilince yanında "Topolojide göster" ve "Kontrol edilen sayfalara ekle" düğmeleri çıkar (tarayıcı senaryosu yoksa Senaryolar sayfasına yönlendirir; zaten ekliyse "Kontrol edilen sayfalarda ✓" görünür).

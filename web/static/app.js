@@ -441,13 +441,24 @@
       const info = h('div', { class: 'map-info' });
       let sel = null;
       const map = drawTopology(topo, { stats: tstats, height: 460, onSelect: (id) => { sel = sel === id ? null : id; map.setFocus(sel); paintInfo(); } });
+      // Seçili uygulamayı "Kontrol edilen sayfalar" bölümüne ekler (tarayıcı senaryosu olanlar için).
+      const pageButton = (n) => {
+        if (n.kind === 'external') return null;
+        const mine = d.scenarios.filter((x) => x.kind === 'browser' && x.asset === n.name);
+        if (!mine.length) return h('button', { type: 'button', title: 'Bu uygulamanın tarayıcı senaryosu yok; Senaryolar > Tarayıcıdan kaydet ile oluşturun.', onclick: () => { location.hash = 'senaryolar'; } }, 'Kontrol edilen sayfalara ekle…');
+        let hid = []; try { hid = JSON.parse(localStorage.getItem('apm_dash_hidden') || '[]'); } catch (e) { hid = []; }
+        const off = mine.filter((x) => hid.includes(x.id));
+        if (!off.length) return h('button', { type: 'button', disabled: true, title: 'Bu uygulama zaten sayfanın üstündeki "Kontrol edilen sayfalar" bölümünde.' }, 'Kontrol edilen sayfalarda ✓');
+        return h('button', { type: 'button', class: 'primary', onclick: () => { try { localStorage.setItem('apm_dash_hidden', JSON.stringify(hid.filter((i) => !off.some((x) => x.id === i)))); } catch (e) { /* */ } render(); } }, 'Kontrol edilen sayfalara ekle');
+      };
       const paintInfo = () => {
         if (sel == null) { info.replaceChildren(h('span', { class: 'muted small' }, 'Bir uygulamaya tıklayın: ona bağlı bileşenler yakınlaştırılır ve kutularda istatistikleri görünür. Kutuları sürükleyerek yerleştirebilirsiniz.')); return; }
         const n = topo.nodes.find((x) => x.id === sel), c = map.connected(sel);
         info.replaceChildren(h('span', { class: 'kl' }, kindIcon(n.kind, 34), h('b', null, n.name), pill(n.status, STATUS[n.status])),
           h('span', { class: 'muted small' }, `${c.dependents} bileşen buna bağımlı · bu ${c.dependencies} bileşene bağımlı`),
           h('span', { class: 'btns' }, h('button', { type: 'button', onclick: () => { sel = null; map.setFocus(null); paintInfo(); } }, 'Tümünü göster'),
-            h('button', { type: 'button', onclick: () => { selectedNode = sel; location.hash = 'topoloji'; } }, 'Topolojide aç')));
+            h('button', { type: 'button', onclick: () => { selectedNode = sel; location.hash = 'topoloji'; } }, 'Topolojide göster'),
+            pageButton(n)));
       };
       paintInfo();
       mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Tüm kutuları (web uygulamaları dahil) fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
