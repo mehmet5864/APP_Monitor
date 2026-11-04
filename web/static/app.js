@@ -326,7 +326,31 @@
     };
     const order = { ok: 0, chg: 1, wait: 2, bad: 3 };
     list.sort((a, b) => order[state(a)[0]] - order[state(b)[0]] || a.name.localeCompare(b.name));
-    const cards = list.map((sc) => {
+    // Kullanıcının sürükle-bırak sırası ve kaldırdığı kartlar (tarayıcıda saklanır)
+    const lsGet = (k) => { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
+    const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* saklama kapalı */ } };
+    const savedOrder = lsGet('apm_dash_order');
+    if (savedOrder.length) {
+      const pos = (x) => { const i = savedOrder.indexOf(x.id); return i < 0 ? 1e6 : i; };
+      list.sort((a, b) => pos(a) - pos(b));
+    }
+    const hiddenIds = lsGet('apm_dash_hidden');
+    const hiddenCount = list.filter((x) => hiddenIds.includes(x.id)).length;
+    const visible = list.filter((x) => !hiddenIds.includes(x.id));
+    const grid = h('div', { class: 'thumbs' });
+    const hideCard = (id) => { lsSet('apm_dash_hidden', [...new Set([...lsGet('apm_dash_hidden'), id])]); render(); };
+    const menu = (e, sc) => {
+      e.preventDefault(); e.stopPropagation();
+      document.querySelectorAll('.ctx-menu').forEach((m) => m.remove());
+      const m = h('div', { class: 'ctx-menu', role: 'menu' },
+        h('button', { type: 'button', role: 'menuitem', onclick: () => { m.remove(); hideCard(sc.id); } }, 'Dashboard\'dan kaldır'));
+      m.style.left = Math.min(e.clientX, window.innerWidth - 200) + 'px'; m.style.top = e.clientY + 'px';
+      document.body.append(m);
+      const close = (ev) => { if (ev.type === 'keydown' && ev.key !== 'Escape') return; m.remove(); document.removeEventListener('click', close); document.removeEventListener('keydown', close); };
+      setTimeout(() => { document.addEventListener('click', close); document.addEventListener('keydown', close); }, 0);
+    };
+    let dragEl = null;
+    const cards = visible.map((sc) => {
       const [cls, label] = state(sc);
       const imgBox = h('div', { class: 'thumb-img' }, h('span', { class: 'muted small' }, sc.shot ? 'yükleniyor…' : 'görüntü yok'));
       const card = h('div', { class: 'thumb ' + cls, tabindex: sc.shot ? '0' : null, role: sc.shot ? 'button' : null, 'aria-label': `${sc.name}, ${label}` }, imgBox,
@@ -347,12 +371,31 @@
             card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
           }).catch(() => imgBox.replaceChildren(h('span', { class: 'muted small' }, 'görüntü yüklenemedi')));
       }
+      card.dataset.id = sc.id; card.draggable = true;
+      card.addEventListener('contextmenu', (e) => menu(e, sc));
+      card.addEventListener('dragstart', (e) => { dragEl = card; card.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(sc.id)); } catch (x) { /* */ } });
+      card.addEventListener('dragend', () => { card.classList.remove('dragging'); grid.querySelectorAll('.drop-t').forEach((c) => c.classList.remove('drop-t')); dragEl = null; });
+      card.addEventListener('dragover', (e) => { if (!dragEl || dragEl === card) return; e.preventDefault(); grid.querySelectorAll('.drop-t').forEach((c) => c.classList.remove('drop-t')); card.classList.add('drop-t'); });
+      card.addEventListener('drop', (e) => {
+        e.preventDefault(); if (!dragEl || dragEl === card) return;
+        const kids = [...grid.children], from = kids.indexOf(dragEl), to = kids.indexOf(card);
+        if (from < to) card.after(dragEl); else card.before(dragEl);
+        card.classList.remove('drop-t');
+        const ids = [...grid.children].map((c) => Number(c.dataset.id));
+        lsSet('apm_dash_order', [...ids, ...savedOrder.filter((i) => !ids.includes(i))]);
+      });
+      const x = h('button', { type: 'button', class: 'thumb-x', title: 'Dashboard\'dan kaldır', 'aria-label': sc.name + ' kartını dashboard\'dan kaldır', onclick: (e) => { e.stopPropagation(); hideCard(sc.id); } }, '×');
+      x.addEventListener('keydown', (e) => e.stopPropagation());
+      card.append(x);
       return card;
     });
+    grid.append(...cards);
+    const restore = hiddenCount ? h('p', { class: 'muted small' }, `${hiddenCount} sayfa dashboard'dan kaldırıldı. `,
+      h('button', { type: 'button', class: 'linklike', onclick: () => { lsSet('apm_dash_hidden', []); render(); } }, 'Tümünü geri getir')) : null;
     return h('section', null, h('h3', null, 'Kontrol edilen sayfalar'),
       h('div', { class: 'legend' }, h('span', { class: 'lg up' }, 'Sağlıklı'), h('span', { class: 'lg warn' }, 'Sayfa değişti (24 sa)'), h('span', { class: 'lg down' }, 'Başarısız'), h('span', { class: 'lg unknown' }, 'Bekliyor')),
-      h('div', { class: 'thumbs' }, cards),
-      h('p', { class: 'muted small' }, 'Görüntü, tarayıcı senaryolarının son kontrolündeki sayfadır (yalnızca son 10 çalıştırma saklanır). Büyütmek için tıklayın.'));
+      grid, restore,
+      h('p', { class: 'muted small' }, 'Kartları sürükleyerek sıralayın; sağ tık veya × ile dashboard\'dan kaldırın (senaryo silinmez). Görüntü, tarayıcı senaryolarının son kontrolündeki sayfadır (yalnızca son 10 çalıştırma saklanır). Büyütmek için tıklayın.'));
   }
 
   async function viewGenel() {

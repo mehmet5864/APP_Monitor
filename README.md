@@ -247,3 +247,5 @@ Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarl
 - **Probe değiştir** (`PUT /api/probes/{id}`): aralık, zaman aşımı, hedef, etkin, HTTP yöntemi/durum/metin/başlık/gövde, TLS ve yönlendirme. Boş bırakılan hedef/başlık/gövde/SNMP community mevcut değeri korur. Tür ve asset değişmez.
 - **Üst çubuk**: sayfa içi arama (`/` kısayolu, vurgulu eşleşmeler), yazdır (her sayfa, `@media print`), sağ üstte açık alarm sayısıyla **uyarı zili** (açılır liste, 15 sn'de bir yenilenir).
 - **Ayarlar > Raporlar** (önizlemeli, yazdır/PDF): Yönetici özeti (executive), Erişilebilirlik, Alarmlar, Envanter, Probe'lar, Topoloji, Denetim kaydı.
+
+- **Dashboard "Kontrol edilen sayfalar"**: kartlar sürükle-bırak ile sıralanır; sağ tık veya × ile dashboard'dan kaldırılır ("Tümünü geri getir" bağlantısı). Sıra/gizleme tarayıcıda (localStorage) saklanır; senaryo silinmez.
