@@ -440,7 +440,7 @@
     if (topo && topo.nodes.length) {
       const info = h('div', { class: 'map-info' });
       let sel = null;
-      const map = drawTopology(topo, { stats: tstats, height: 460, onSelect: (id) => { sel = sel === id ? null : id; map.setFocus(sel); paintInfo(); } });
+      const map = drawTopology(topo, { stats: tstats, height: 460, webOnly: true, onSelect: (id) => { sel = sel === id ? null : id; map.setFocus(sel); paintInfo(); } });
       // Seçili uygulamayı "Kontrol edilen sayfalar" bölümüne ekler (tarayıcı senaryosu olanlar için).
       const pageButton = (n) => {
         if (n.kind === 'external') return null;
@@ -452,16 +452,16 @@
         return h('button', { type: 'button', class: 'primary', onclick: () => { try { localStorage.setItem('apm_dash_hidden', JSON.stringify(hid.filter((i) => !off.some((x) => x.id === i)))); } catch (e) { /* */ } render(); } }, 'Kontrol edilen sayfalara ekle');
       };
       const paintInfo = () => {
-        if (sel == null) { info.replaceChildren(h('span', { class: 'muted small' }, 'Bir uygulamaya tıklayın: ona bağlı bileşenler yakınlaştırılır ve kutularda istatistikleri görünür. Kutuları sürükleyerek yerleştirebilirsiniz.')); return; }
+        if (sel == null) { info.replaceChildren(h('span', { class: 'muted small' }, 'Haritada yalnızca web uygulamaları görünür. Birine tıklayın: ona bağlı bileşenler açılır ve kutularda istatistikleri görünür. Kutuları sürükleyerek yerleştirebilirsiniz.')); return; }
         const n = topo.nodes.find((x) => x.id === sel), c = map.connected(sel);
         info.replaceChildren(h('span', { class: 'kl' }, kindIcon(n.kind, 34), h('b', null, n.name), pill(n.status, STATUS[n.status])),
           h('span', { class: 'muted small' }, `${c.dependents} bileşen buna bağımlı · bu ${c.dependencies} bileşene bağımlı`),
-          h('span', { class: 'btns' }, h('button', { type: 'button', onclick: () => { sel = null; map.setFocus(null); paintInfo(); } }, 'Tümünü göster'),
+          h('span', { class: 'btns' }, h('button', { type: 'button', onclick: () => { sel = null; map.setFocus(null); paintInfo(); } }, 'Yalnızca web uygulamaları'),
             h('button', { type: 'button', onclick: () => { selectedNode = sel; location.hash = 'topoloji'; } }, 'Topolojide göster'),
             pageButton(n)));
       };
       paintInfo();
-      mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Tüm kutuları (web uygulamaları dahil) fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
+      mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Web uygulamalarına tıklayınca bağlı bileşenleri açılır. Kutuları fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
     }
     return h('div', null,
       pageFrames(d.scenarios),
@@ -1660,6 +1660,10 @@
     let focus = byId.has(opts.focus) ? opts.focus : null;
     let fset = focus != null ? connected(t.edges, focus).all : null;
     const hOf = (id) => NH + (fset && fset.has(id) ? CARD_H : 0);
+    // webOnly: varsayılan olarak yalnızca web uygulamaları görünür; biri seçilince bağlı bileşenler de açılır.
+    const isWeb = (id) => ['website', 'webservice', 'url'].includes((byId.get(id) || {}).kind);
+    const shown = (id) => !opts.webOnly || isWeb(id) || !!(fset && fset.has(id));
+    const webIds = opts.webOnly ? new Set(t.nodes.filter((n) => isWeb(n.id)).map((n) => n.id)) : null;
 
     const svg = s('svg', { class: 'topo-svg', width: '100%', height: H, role: 'group', 'aria-label': 'Topoloji haritası (sürükleyerek yerleştirebilirsiniz)' },
       s('defs', null,
@@ -1679,7 +1683,7 @@
     };
     // Görünüm kutusu: odak varsa bağlı bileşenler, yoksa tüm harita. Kapsayıcı oranına uyarlanır.
     const targetBox = () => {
-      const b = bounds(fset), pad = fset ? 48 : PAD;
+      const b = bounds(fset || (webIds && webIds.size ? webIds : null)), pad = fset ? 48 : PAD;
       let w = Math.max(b.x1 - b.x0 + pad * 2, fset ? 560 : 0), hh = Math.max(b.y1 - b.y0 + pad * 2, fset ? 300 : 0);
       const ratio = (svg.clientWidth || 1100) / H;
       if (w / hh < ratio) w = hh * ratio; else hh = w / ratio;
@@ -1706,7 +1710,8 @@
         el.setAttribute('d', edgePath(a, hOf(e.source), b, hOf(e.target)));
         const hi = focus != null && (e.source === focus || e.target === focus);
         const faded = fset && !(fset.has(e.source) && fset.has(e.target));
-        el.setAttribute('class', 'edge' + (e.kind === 'runs_on' ? ' runs' : '') + (hi ? ' hi' : '') + (faded ? ' faded' : ''));
+        const hid = !(shown(e.source) && shown(e.target));
+        el.setAttribute('class', 'edge' + (e.kind === 'runs_on' ? ' runs' : '') + (hi ? ' hi' : '') + (faded ? ' faded' : '') + (hid ? ' hid' : ''));
         el.setAttribute('marker-end', `url(#${hi ? 'topo-arrow-hi' : 'topo-arrow'})`);
       }
     };
@@ -1729,7 +1734,7 @@
       if (n.page_changed) kids.push(s('g', { class: 'chgtag' }, s('rect', { x: NW - 84, y: -9, width: 82, height: 16, rx: 3 }), s('text', { x: NW - 43, y: 3, 'text-anchor': 'middle' }, 'sayfa değişti')));
       if (n.open_alerts) kids.push(s('g', { class: 'badge' }, s('circle', { cx: NW - 4, cy: 2, r: 10 }), s('text', { x: NW - 4, y: 6, 'text-anchor': 'middle' }, n.open_alerts)));
       const faded = fset && !focused;
-      const g = s('g', { class: `node ${n.status}${root ? ' root' : ''}${n.id === focus ? ' sel' : ''}${n.kind === 'external' ? ' ext' : ''}${n.page_changed ? ' chg' : ''}${faded ? ' faded' : ''}`, tabindex: faded ? '-1' : '0', role: 'button',
+      const g = s('g', { class: `node ${n.status}${root ? ' root' : ''}${n.id === focus ? ' sel' : ''}${n.kind === 'external' ? ' ext' : ''}${n.page_changed ? ' chg' : ''}${faded ? ' faded' : ''}${shown(n.id) ? '' : ' hid'}`, tabindex: faded || !shown(n.id) ? '-1' : '0', role: 'button',
         'aria-label': `${n.name}, ${STATUS[n.status]}${root ? ', olası kök neden' : ''}`, transform: `translate(${pos.get(n.id).x} ${pos.get(n.id).y})` }, ...kids);
       attach(g, n);
       return g;

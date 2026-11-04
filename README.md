@@ -250,3 +250,4 @@ Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarl
 
 - **Dashboard "Kontrol edilen sayfalar"**: kartlar sürükle-bırak ile sıralanır; sağ tık veya × ile dashboard'dan kaldırılır ("Tümünü geri getir" bağlantısı). Sıra/gizleme tarayıcıda (localStorage) saklanır; senaryo silinmez.
 - **Uygulama haritası**: bir uygulama seçilince yanında "Topolojide göster" ve "Kontrol edilen sayfalara ekle" düğmeleri çıkar (tarayıcı senaryosu yoksa Senaryolar sayfasına yönlendirir; zaten ekliyse "Kontrol edilen sayfalarda ✓" görünür).
+- **Uygulama haritası (Genel bakış)**: varsayılan olarak yalnızca web uygulamaları (web sitesi/servisi) görünür; birine tıklayınca ona bağlı bileşenler açılır, "Yalnızca web uygulamaları" ile kapanır. Topoloji sekmesi tüm bileşenleri gösterir.
