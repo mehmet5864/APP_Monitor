@@ -281,3 +281,7 @@ Migration `011_roles.sql` açılışta otomatik uygulanır; yalnızca `api_keys.
 - Linux RAM: `Cached memory` ve `Memory buffers` satırları kullanılan bellekten düşülür. CPU: `hrProcessorLoad` ortalaması (yoksa UCD `ssCpuIdle`).
 - Veritabanı: `012_host_probe.sql` yalnızca tür kısıtını genişletir; mevcut veri değişmez, açılışta otomatik uygulanır.
 - Henüz yok: SSH ile ölçüm, WinRM, SNMP trap alımı.
+
+## yama28 — Alarm panosu
+
+Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu hizmetlerin kartları, sağlıklı hizmetler ve son 24 saatin alarm grafiği. Hizmetler en kötü durumuna göre renk ve şekille gösterilir: Kritik = kırmızı sekizgen, Erişilemiyor = kırmızı çarpılı daire, Uyarı = sarı üçgen, Bilgi = mavi daire, Sağlıklı = yeşil daire. Yalnızca arayüz değişikliğidir; veritabanı ve API değişmedi.

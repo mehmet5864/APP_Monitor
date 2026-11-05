@@ -1383,9 +1383,75 @@
   const ruleKey = (r) => `${r.metric}|${r.comparator}|${r.threshold}`;
   const ruleBody = (r) => ({ name: r.name, metric: r.metric, comparator: r.comparator, threshold: r.threshold, window_sec: r.window_sec, severity: r.severity });
 
+  // Alarm panosu: sorunlu hizmetler önem derecesine göre renk ve şekille gösterilir.
+  // Kritik = kırmızı sekizgen, Uyarı = sarı üçgen, Bilgi = mavi daire, Erişilemiyor = kırmızı çarpılı daire, Sağlıklı = yeşil daire.
+  function sevShape(kind, size) {
+    const sz = size || 28, a = { viewBox: '0 0 28 28', width: sz, height: sz, class: 'sv ' + kind, role: 'img', 'aria-label': ({ critical: 'Kritik', warning: 'Uyarı', info: 'Bilgi', down: 'Erişilemiyor', ok: 'Sağlıklı' })[kind] };
+    const txt = (t) => s('text', { x: '14', y: '19', 'text-anchor': 'middle', class: 'sv-t' }, t);
+    switch (kind) {
+      case 'critical': return s('svg', a, s('polygon', { points: '9,2 19,2 26,9 26,19 19,26 9,26 2,19 2,9', class: 'sv-f' }), txt('!'));
+      case 'warning': return s('svg', a, s('polygon', { points: '14,2 27,25 1,25', class: 'sv-f' }), s('text', { x: '14', y: '22', 'text-anchor': 'middle', class: 'sv-t' }, '!'));
+      case 'down': return s('svg', a, s('circle', { cx: '14', cy: '14', r: '12', class: 'sv-f' }), s('path', { d: 'M9 9l10 10M19 9L9 19', class: 'sv-x' }));
+      case 'ok': return s('svg', a, s('circle', { cx: '14', cy: '14', r: '12', class: 'sv-f' }), s('path', { d: 'M8.5 14.5l4 4 7-8', class: 'sv-x' }));
+      default: return s('svg', a, s('circle', { cx: '14', cy: '14', r: '12', class: 'sv-f' }), txt('i'));
+    }
+  }
+  function alarmBoard(open, assets, dash) {
+    const rank = { critical: 3, down: 3, warning: 2, info: 1, ok: 0 };
+    const by = new Map();
+    for (const a of assets) by.set(a.name, { a, alerts: [], level: a.status === 'down' ? 'down' : 'ok' });
+    for (const al of open) {
+      let e = by.get(al.asset);
+      if (!e) { e = { a: { name: al.asset, kind: 'service', status: 'unknown' }, alerts: [], level: 'ok' }; by.set(al.asset, e); }
+      e.alerts.push(al);
+      if (rank[al.severity] > rank[e.level]) e.level = al.severity;
+    }
+    const all = [...by.values()];
+    const bad = all.filter((e) => e.level !== 'ok' || e.alerts.length).sort((x, y) => rank[y.level] - rank[x.level] || y.alerts.length - x.alerts.length || x.a.name.localeCompare(y.a.name));
+    const good = all.filter((e) => !bad.includes(e));
+    const worst = bad.length ? bad[0].level : 'ok';
+    const cnt = (k) => bad.filter((e) => e.level === k).length;
+    const banner = h('div', { class: 'ab-banner ' + (worst === 'down' ? 'critical' : worst) },
+      sevShape(worst === 'down' ? 'critical' : worst, 44),
+      h('div', null,
+        h('b', { class: 'ab-title' }, bad.length ? `${bad.length} hizmette sorun var` : 'Tüm hizmetler sağlıklı'),
+        h('div', { class: 'muted' }, bad.length ? `${cnt('critical') + cnt('down')} kritik · ${cnt('warning')} uyarı · ${cnt('info')} bilgi · ${good.length} hizmet sağlıklı` : `${all.length} hizmet izleniyor, açık alarm yok.`)));
+    const tile = (e) => {
+      const lvl = e.level;
+      return h('div', { class: 'ab-tile ' + (lvl === 'down' ? 'critical' : lvl), tabindex: '0' },
+        h('div', { class: 'ab-head' }, sevShape(lvl, 30),
+          h('div', { class: 'ab-name' }, h('b', null, e.a.name), h('div', { class: 'muted small' }, (KIND[e.a.kind] || e.a.kind || '') + (e.a.status ? ' · ' + (STATUS[e.a.status] || e.a.status) : ''))),
+          h('span', { class: 'ab-n' }, String(e.alerts.length || (lvl === 'down' ? '!' : '')))),
+        e.alerts.length ? h('ul', { class: 'ab-list' }, e.alerts.slice(0, 4).map((al) => h('li', null,
+          h('span', { class: 'ab-dot ' + al.severity }), h('span', null, al.rule), ' ',
+          h('span', { class: 'mono small muted' }, `${fmt(al.value)} (${al.comparator} ${al.threshold}) · ${ago(al.opened_at)}`))), e.alerts.length > 4 ? h('li', { class: 'muted small' }, `+${e.alerts.length - 4} alarm daha`) : null)
+          : h('div', { class: 'muted small' }, 'Hizmet erişilemiyor.'));
+    };
+    const legend = h('div', { class: 'ab-legend' }, [['critical', 'Kritik'], ['down', 'Erişilemiyor'], ['warning', 'Uyarı'], ['info', 'Bilgi'], ['ok', 'Sağlıklı']].map(([k, l]) => h('span', null, sevShape(k, 16), ' ' + l)));
+    let trend = null;
+    if (dash && dash.alerts_critical && dash.alerts_critical.length) {
+      const c = dash.alerts_critical, o = dash.alerts_other, n = c.length, mx = Math.max(1, ...c.map((v, i) => v + o[i]));
+      const bw = 10, W = n * (bw + 3);
+      const bars = [];
+      for (let i = 0; i < n; i++) {
+        const hc = (c[i] / mx) * 44, ho = (o[i] / mx) * 44;
+        bars.push(s('rect', { x: String(i * (bw + 3)), y: String(48 - hc), width: String(bw), height: String(hc), class: 'tb critical' }));
+        bars.push(s('rect', { x: String(i * (bw + 3)), y: String(48 - hc - ho), width: String(bw), height: String(ho), class: 'tb warning' }));
+      }
+      trend = h('div', { class: 'panel' }, h('h3', null, 'Son 24 saatte açılan alarmlar'),
+        s('svg', { viewBox: `0 0 ${W} 50`, class: 'ab-trend', role: 'img', 'aria-label': 'Saatlik alarm sayısı', preserveAspectRatio: 'none' }, ...bars),
+        h('div', { class: 'muted small' }, 'Kırmızı: kritik, sarı: diğer. Her çubuk bir saat.'));
+    }
+    return h('div', { class: 'stack' }, banner,
+      bad.length ? h('div', { class: 'ab-grid' }, bad.map(tile)) : null,
+      good.length ? h('div', { class: 'panel' }, h('h3', null, 'Sağlıklı hizmetler'),
+        h('div', { class: 'ab-ok' }, good.map((e) => h('span', { class: 'ab-chip' }, sevShape('ok', 14), ' ' + e.a.name)))) : null,
+      trend, legend);
+  }
+
   async function viewAlarmlar() {
     await refreshHeader();
-    const [rules, open, resolved] = await Promise.all([api('/api/alert-rules'), api('/api/alerts?state=open'), api('/api/alerts?state=resolved')]);
+    const [rules, open, resolved, assetsAll, dash] = await Promise.all([api('/api/alert-rules'), api('/api/alerts?state=open'), api('/api/alerts?state=resolved'), api('/api/assets').catch(() => []), api('/api/dashboard').catch(() => null)]);
     const msg = h('p', { class: 'msg', role: 'status' });
     let editing = null;
     const f = h('form', { class: 'inline' },
@@ -1452,6 +1518,7 @@
       kpi('Kapanan', String(resolved.length), 'son kayıtlar', null, ''),
       kpi('Kurallar', `${rules.filter((r) => r.enabled).length} / ${rules.length}`, 'etkin', null, ''));
     return h('div', null,
+      h('section', null, h('h2', null, 'Alarm panosu'), alarmBoard(open, assetsAll, dash)),
       h('section', null, h('h2', null, 'Açık alarmlar'), aSum, alertTable(open, false)),
       h('section', null, h('h3', null, 'Alarm kuralları'),
         h('p', { class: 'muted' }, 'Kural, pencere içindeki ortalama değeri eşikle karşılaştırır. Kuralı düzenleyince açık alarmları kapanır; koşul sürüyorsa yeniden açılır.'),
