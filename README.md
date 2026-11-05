@@ -297,3 +297,16 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 - **Veritabanı**: `013_notifications.sql` yalnızca yeni tablo/sütun ekler; mevcut veri değişmez, açılışta otomatik uygulanır.
 - MAPI Docker/Linux'ta çalışmaz (SMTP/Graph/EWS kullanın). EWS modern kimlik doğrulamayı (OAuth) desteklemez.
 - Kullanım kılavuzu: `KULLANIM-KILAVUZU.md`; uygulamada menüde **Yardım** sayfası olarak da açılır (`web/static/kilavuz.md`, KILAVUZ değişince ikisini de güncelleyin).
+
+## yama30 — SIEM'e log gönderimi, Yardım sayfası
+
+- **SIEM hedefleri** (Bildirimler sayfası, yalnızca admin): denetim kayıtları ve alarm açılış/düzelme olayları Syslog UDP/TCP/TLS veya HTTP (Splunk HEC, genel JSON) ile iletilir. Biçim: RFC 5424, CEF, JSON. Facility, app-name, alarm önem eşiği ayarlanır; "Deneme gönder" vardır. Token gizli saklanır (boş bırakılırsa korunur). SaaS modunda özel ağ adresleri engellenir.
+- Bakım penceresindeki alarmlar SIEM'e iletilir ("bakım penceresinde" notuyla); bildirim kanalları ise susturulur.
+- **Yardım** menüsü: kılavuz uygulama içinden okunur (`web/static/kilavuz.md`; `KULLANIM-KILAVUZU.md` ile aynı tutulur).
+- Veritabanı: `014_siem.sql` yalnızca yeni tablo ekler; veri değişmez, açılışta otomatik uygulanır.
+
+## yama31 — Kısmi erişim (sarı), sürüm numarası, çevrimdışı güncelleme paketi
+
+- **Kısmen erişilemiyor (degraded)**: bir asset'in tüm probe ve senaryolarının son sonucuna bakılır; hepsi başarılı = up, hepsi başarısız = down, karışık = degraded (sarı). Hazır kurallar: "Servis erişilemiyor" (`asset.down > 0`, kritik) ve yeni "Servis kısmen erişilemiyor" (`asset.degraded > 0`, uyarı). Migration `015_degraded.sql`: durum kısıtını genişletir, `probes.last_ok` ekler, değiştirilmemiş hazır kuralı günceller ve uyarı kuralını ekler; veri silinmez.
+- **Sürüm**: `internal/version` (varsayılan v1.0.0, `-ldflags "-X appmon/internal/version.Version=..."` ile değişir). Üst çubukta, Ayarlar > Sistem'de ve `/healthz` yanıtında görünür.
+- **Çevrimdışı (RHEL) güncelleme paketi**: `./paketle-guncelleme.sh [sürüm]` → `dist/appmon-guncelleme-<sürüm>.tar.gz` (sunucu+agent ikilileri, `guncelle-apache.sh`, SHA256SUMS, kılavuz). Sunucuda `sudo ./guncelle-apache.sh`: yedek → yükle → yeniden başlat → sağlık kontrolü → başarısızsa otomatik geri dönüş. Ayrıntı: `deploy/apache/OKU-GUNCELLEME.txt`.

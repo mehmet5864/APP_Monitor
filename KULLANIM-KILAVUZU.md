@@ -4,6 +4,8 @@ APP_MON; sunucu, servis, web sitesi ve ağ cihazlarınızı izleyen, sorun oldu�
 
 ## 1. Kurulum ve güncelleme
 **Docker (Windows):** proje klasöründe PowerShell ile `.\baslat-docker.bat` (ilk kurulum), `.\guncelle-docker.bat` (güncelleme), `.\durdur-docker.bat` (durdurma). Güncelleme veriyi silmez; veritabanı değişiklikleri açılışta otomatik ve yıkıcı olmayan şekilde uygulanır.
+**Sürüm:** üst çubukta (On-premise etiketinin yanında) ve Ayarlar > Sistem'de görünür (ör. v1.0.0).
+**Çevrimdışı güncelleme (RHEL):** `appmon-guncelleme-vX.Y.Z.tar.gz` paketini sunucuya taşıyın; `tar xzf`, `cd appmon-guncelleme`, `sha256sum -c SHA256SUMS`, `sudo ./guncelle-apache.sh`. Betik veritabanı yedeği alır (/var/backups/appmon), yeni sürümü yükler, sağlık kontrolü yapar; açılmazsa eski sürüme döner. Elle geri alma: `sudo ./guncelle-apache.sh --geri-al`.
 **Linux / çevrimdışı kurulum:** paketteki `kur.sh` veya `kur-apache.sh`. Mevcut kurulumda ayar dosyası, veritabanı ve anahtarlar korunur; yalnızca ikili dosya değişir. Güncellemeden önce yedek alın: `pg_dump appmon > appmon-yedek.sql`.
 **Ortam değişkenleri:** `APM_PUBLIC_URL` bildirimlerdeki bağlantı adresidir (ör. `https://apm.sirket.local`).
 
@@ -32,6 +34,7 @@ Probe'lar sayfasından eklenir; her probe aralıkla (sn) çalışır.
 
 ## 5. Alarmlar
 **Alarm panosu:** sorunlu hizmetler renk/şekil ile (Kritik kırmızı sekizgen, Erişilemiyor çarpılı daire, Uyarı sarı üçgen, Bilgi mavi daire, Sağlıklı yeşil).
+**Kısmen erişilemiyor (sarı):** bir hizmetin birden çok probe/senaryosu varsa (ör. ana sayfa + alt sayfalar/portlar) durum hepsine bakılarak belirlenir: hepsi başarılı = Çalışıyor, hepsi başarısız = Erişilemiyor (kırmızı, "Servis erişilemiyor" kritik alarmı), bir kısmı başarısız = **Kısmen erişilemiyor** (sarı, "Servis kısmen erişilemiyor" uyarı alarmı). Yani sayfa açılıyor ama bazı alt bileşenlere gidilemiyorsa kırmızı değil sarı görünür. Tek probe'lu hizmetlerde davranış değişmez.
 **Kurallar:** ad, metrik, koşul (>, <...), eşik, pencere (sn), önem. Kural pencere içindeki **ortalama** değeri eşikle karşılaştırır; 15 sn'de bir değerlendirilir. Düzenlenen kuralın açık alarmları kapanır, koşul sürüyorsa yeniden açılır. "Hazır şablonlar" ile tek tıkla eklenir.
 **Kapsam:** hizmetler (boş = hepsi), grup, etiket ile kuralı sınırlayın.
 **Üstlenme:** açık alarmda "Üstleniyorum" ile sahiplenin; "Geri al" ile bırakın. Kimin ne zaman üstlendiği listede görünür.
@@ -50,9 +53,24 @@ Bildirimler sayfasından kanal ekleyin; her kanalda **en düşük önem**, **ç�
 | Telegram | Bot token ve chat ID |
 Alıcılar virgülle ayrılır. Hata olursa kanalın son hatası kartta görünür.
 
+### SIEM'e log gönderimi (admin)
+Bildirimler sayfasının altındaki **SIEM'e log gönderimi** bölümünden hedef eklenir. Denetim kayıtları (kim neyi değiştirdi) ve alarmlar (açılış/düzelme) olay anında iletilir; bakım penceresindeki alarmlar da iletilir ("bakım penceresinde" notuyla).
+| Ayar | Açıklama |
+|---|---|
+| Protokol | Syslog UDP (514), Syslog TCP (514), Syslog TLS (6514) veya HTTP (Splunk HEC / genel JSON) |
+| Biçim | RFC 5424 (yapılandırılmış veri ile), CEF (ArcSight, QRadar, Sentinel), JSON |
+| Facility / uygulama adı | Syslog facility (varsayılan 16 = local0) ve app-name (varsayılan appmon) |
+| Kaynaklar | Denetim kayıtları ve/veya alarmlar; alarmlar için en düşük önem seçilebilir |
+| HTTP | Adres + kimlik doğrulama (Splunk HEC token veya Bearer); HTTP'de gövde JSON'dur |
+- Önem eşlemesi: kritik = syslog 2 / CEF 9, uyarı = 4 / 6, bilgi = 6 / 3.
+- **Deneme gönder** ile hedefe örnek olay gönderilir; hata olursa hedef kartında "Son hata" görünür.
+- Syslog UDP'de teslim garantisi yoktur; güvenilir iletim için TCP veya TLS seçin. Kendinden imzalı sertifikada "TLS sertifika doğrulamasını atla" işaretlenebilir.
+- Token gizli saklanır; düzenlerken boş bırakılırsa eski değer korunur.
+
 ## 7. Sorun giderme
 - **Yeni özellik görünmüyor:** `.\guncelle-docker.bat` çalıştırın, tarayıcıda Ctrl+F5.
 - **SNMP "zaman aşımı":** servis çalışıyor mu, topluluk adı, izinli yönetici listesi, UDP 161 güvenlik duvarı.
+- **SIEM'e olay düşmüyor:** hedefte Deneme gönder'i deneyin; port/protokolü ve güvenlik duvarını kontrol edin; UDP'de hata görünmeyebilir, TCP kullanın.
 - **Bildirim gitmiyor:** Test gönder'i deneyin; kanalın son hatasına bakın; bakım penceresi aktif olabilir; en düşük önem alarmın önemini geçiyor olabilir.
 - **Docker'da MAPI:** desteklenmez; SMTP/Graph/EWS kullanın.
 

@@ -2,6 +2,8 @@
 package app
 
 import (
+	"appmon/internal/siem"
+	"appmon/internal/version"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -135,7 +137,7 @@ func (s *Server) Routes() http.Handler {
 			fail(w, http.StatusServiceUnavailable, "veritabanı yanıt vermiyor")
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "ok", "mode": s.Mode})
+		writeJSON(w, 200, map[string]string{"status": "ok", "mode": s.Mode, "version": version.Version})
 	})
 
 	// Toplama uçları (agent anahtarı yeterli)
@@ -189,6 +191,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/maintenance", s.guard("read", s.listMaintenance))
 	mux.HandleFunc("POST /api/maintenance", s.guard("write", s.createMaintenance))
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.guard("write", s.deleteMaintenance))
+	mux.HandleFunc("GET /api/siem-targets", s.guard("admin", s.listSIEM))
+	mux.HandleFunc("POST /api/siem-targets", s.guard("admin", s.createSIEM))
+	mux.HandleFunc("PUT /api/siem-targets/{id}", s.guard("admin", s.updateSIEM))
+	mux.HandleFunc("DELETE /api/siem-targets/{id}", s.guard("admin", s.deleteSIEM))
+	mux.HandleFunc("POST /api/siem-targets/{id}/test", s.guard("admin", s.testSIEM))
 	mux.HandleFunc("GET /api/notification-channels", s.guard("admin", s.listChannels))
 	mux.HandleFunc("POST /api/notification-channels", s.guard("admin", s.createChannel))
 	mux.HandleFunc("PUT /api/notification-channels/{id}", s.guard("admin", s.updateChannel))
@@ -243,6 +250,7 @@ func (s *Server) audit(ctx context.Context, tenant int64, actor, action, detail 
 		`INSERT INTO audit_log (tenant_id, actor, action, detail) VALUES ($1, $2, $3, $4)`, tenant, actor, action, detail); err != nil {
 		log.Printf("denetim kaydı yazılamadı: %v", err)
 	}
+	s.siemEmit(tenant, siem.Event{Type: "audit", Severity: "info", Actor: actor, Action: action, Detail: detail})
 }
 
 // Bootstrap ilk çalıştırmada varsayılan kiracıyı, lisansı, yönetici anahtarını ve örnek alarm kurallarını oluşturur.
@@ -284,7 +292,8 @@ func (s *Server) Bootstrap(ctx context.Context, adminKey string, assetLimit int)
 			{"Yüksek CPU kullanımı", "host.cpu_pct", ">", 90, 120, "warning"},
 			{"Yüksek bellek kullanımı", "host.mem_pct", ">", 90, 120, "warning"},
 			{"Disk dolmak üzere", "host.disk_pct", ">", 90, 300, "critical"},
-			{"Servis erişilemiyor", "probe.up", "<", 1, 30, "critical"},
+			{"Servis erişilemiyor", "asset.down", ">", 0, 30, "critical"},
+			{"Servis kısmen erişilemiyor", "asset.degraded", ">", 0, 30, "warning"},
 			{"Yavaş yanıt", "probe.latency_ms", ">", 1000, 120, "warning"},
 			{"Senaryo başarısız", "scenario.up", "<", 1, 60, "critical"},
 			{"Yavaş senaryo", "scenario.duration_ms", ">", 5000, 120, "warning"},

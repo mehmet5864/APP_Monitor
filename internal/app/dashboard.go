@@ -1,6 +1,7 @@
 package app
 
 import (
+	"appmon/internal/version"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -167,7 +168,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 // GET /api/settings - salt okunur sistem bilgisi.
 func (s *Server) settingsInfo(w http.ResponseWriter, r *http.Request, a Auth) {
 	info := map[string]any{
-		"mode": s.Mode, "retention_days": s.RetentionDays, "block_private": s.BlockPrivate,
+		"version": version.Version, "mode": s.Mode, "retention_days": s.RetentionDays, "block_private": s.BlockPrivate,
 		"browser_enabled": s.Browser != nil, "user": a.Label, "role": a.Role,
 	}
 	writeJSON(w, 200, info)

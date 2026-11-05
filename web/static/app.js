@@ -4,7 +4,7 @@
   // ---- Yardımcılar ----
   const $ = (sel, root = document) => root.querySelector(sel);
   const LANG = { none: '—', dotnet: '.NET', java: 'Java', python: 'Python', go: 'Go' };
-  const STATUS = { up: 'Çalışıyor', down: 'Erişilemiyor', offline: 'Çevrimdışı', unknown: 'Bilinmiyor' };
+  const STATUS = { up: 'Çalışıyor', down: 'Erişilemiyor', degraded: 'Kısmen erişilemiyor', offline: 'Çevrimdışı', unknown: 'Bilinmiyor' };
   const KIND = { host: 'Sunucu', service: 'Servis', database: 'Veritabanı', url: 'Web sitesi', website: 'Web sitesi', webservice: 'Web servisi',
     network: 'Ağ', cache: 'Önbellek', queue: 'Kuyruk', external: 'Dış bağımlılık' };
   const KIND_OPTS = ['website', 'webservice', 'service', 'database', 'host', 'network', 'cache', 'queue'].map((k) => [k, KIND[k]]);
@@ -174,6 +174,7 @@
       const o = await api('/api/overview');
       const lic = o.license;
       $('#mode').textContent = lic.mode === 'saas' ? 'SaaS' : 'On-premise';
+      if (o.version) $('#ver').textContent = o.version;
       $('#meter-label').textContent = `${lic.assets_used} / ${lic.asset_limit} asset`;
       const pct = lic.asset_limit ? Math.min(100, (lic.assets_used / lic.asset_limit) * 100) : 100;
       const fill = $('#meter-fill');
@@ -441,7 +442,7 @@
     const kpis = h('div', { class: 'kpis' },
       kpi('Erişilebilirlik (24 saat)', av == null ? '—' : av.toFixed(av >= 99.95 ? 1 : 2) + '%', av == null ? 'veri yok' : 'probe ve senaryo ortalaması', miniLine(d.availability), av != null && av < 99 ? 'bad' : ''),
       kpi('Açık alarm', String(o.open_alerts), crit ? `${crit} kritik` : 'kritik alarm yok', null, crit ? 'bad' : ''),
-      kpi('Asset', `${st.up || 0} / ${total}`, `${st.down || 0} erişilemiyor, ${st.offline || 0} çevrimdışı`, null, (st.down || 0) ? 'bad' : ''),
+      kpi('Asset', `${st.up || 0} / ${total}`, `${st.down || 0} erişilemiyor, ${st.degraded || 0} kısmen erişilemiyor, ${st.offline || 0} çevrimdışı`, null, (st.down || 0) ? 'bad' : ''),
       kpi('Ort. yanıt süresi (1 sa)', d.avg_latency_ms == null ? '—' : fmt(d.avg_latency_ms) + ' ms', 'probe gecikmesi'),
       kpi('Senaryolar', d.scenarios.length ? `${scOk} / ${d.scenarios.length}` : '—', d.scenarios.length ? 'son çalıştırması başarılı' : 'henüz senaryo yok', null, d.scenarios.length && scOk < d.scenarios.length ? 'bad' : ''));
 
@@ -449,8 +450,8 @@
     const alertRows = d.alerts_critical.map((c, i) => h('tr', null, h('td', { class: 'mono' }, hourLabel(i)), h('td', { class: 'mono' }, c), h('td', { class: 'mono' }, d.alerts_other[i])));
 
     const statusPanel = h('div', { class: 'panel stack' }, h('h3', null, 'Asset durumu'),
-      total ? h('div', { class: 'bar', role: 'img', 'aria-label': 'Asset durum dağılımı' }, ['up', 'down', 'offline', 'unknown'].map(seg)) : h('p', { class: 'muted' }, 'Henüz asset yok.'),
-      h('div', { class: 'legend' }, ['up', 'down', 'offline', 'unknown'].map((k) => h('span', { class: 'lg ' + k }, `${STATUS[k]}: ${st[k] || 0}`))),
+      total ? h('div', { class: 'bar', role: 'img', 'aria-label': 'Asset durum dağılımı' }, ['up', 'degraded', 'down', 'offline', 'unknown'].map(seg)) : h('p', { class: 'muted' }, 'Henüz asset yok.'),
+      h('div', { class: 'legend' }, ['up', 'degraded', 'down', 'offline', 'unknown'].map((k) => h('span', { class: 'lg ' + k }, `${STATUS[k]}: ${st[k] || 0}`))),
       h('h3', null, 'Türe göre'),
       Object.keys(d.by_kind).length ? rankBars(Object.entries(Object.entries(d.by_kind).reduce((m, [k, n]) => { const kk = k === 'url' ? 'website' : k; m[kk] = (m[kk] || 0) + n; return m; }, {})).sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ kind: k, label: KIND[k] || k, value: n, text: String(n) }))) : h('p', { class: 'muted' }, 'Henüz veri yok.'));
 
@@ -1385,7 +1386,8 @@
       { name: 'Disk dolmak üzere', metric: 'host.disk_pct', comparator: '>', threshold: 85, window_sec: 600, severity: 'warning', desc: 'Disk doluluğu %85 üzerinde' },
       { name: 'Disk kritik', metric: 'host.disk_pct', comparator: '>', threshold: 95, window_sec: 600, severity: 'critical', desc: 'Disk doluluğu %95 üzerinde' }] },
     { group: 'Erişilebilirlik ve hız (probe)', items: [
-      { name: 'Servis erişilemiyor', metric: 'probe.up', comparator: '<', threshold: 1, window_sec: 30, severity: 'critical', desc: 'Probe başarısız' },
+      { name: 'Servis erişilemiyor', metric: 'asset.down', comparator: '>', threshold: 0, window_sec: 30, severity: 'critical', desc: 'Hizmetin tüm probe/senaryoları başarısız' },
+      { name: 'Servis kısmen erişilemiyor', metric: 'asset.degraded', comparator: '>', threshold: 0, window_sec: 30, severity: 'warning', desc: 'Sayfa açılıyor ama bazı alt bileşenlere erişilemiyor' },
       { name: 'Yavaş yanıt', metric: 'probe.latency_ms', comparator: '>', threshold: 1000, window_sec: 120, severity: 'warning', desc: 'Ortalama yanıt süresi 1 sn üzerinde' },
       { name: 'Çok yavaş yanıt', metric: 'probe.latency_ms', comparator: '>', threshold: 3000, window_sec: 120, severity: 'critical', desc: 'Ortalama yanıt süresi 3 sn üzerinde' },
       { name: 'Paket kaybı', metric: 'probe.packet_loss_pct', comparator: '>', threshold: 20, window_sec: 300, severity: 'warning', desc: 'ICMP paket kaybı %20 üzerinde' },
@@ -1417,7 +1419,7 @@
   function alarmBoard(open, assets, dash) {
     const rank = { critical: 3, down: 3, warning: 2, info: 1, ok: 0 };
     const by = new Map();
-    for (const a of assets) by.set(a.name, { a, alerts: [], level: a.status === 'down' ? 'down' : 'ok' });
+    for (const a of assets) by.set(a.name, { a, alerts: [], level: a.status === 'down' ? 'down' : a.status === 'degraded' ? 'warning' : 'ok' });
     for (const al of open) {
       let e = by.get(al.asset);
       if (!e) { e = { a: { name: al.asset, kind: 'service', status: 'unknown' }, alerts: [], level: 'ok' }; by.set(al.asset, e); }
@@ -1444,7 +1446,7 @@
           h('span', { class: 'ab-dot ' + al.severity }), h('span', null, al.rule), ' ',
           h('span', { class: 'mono small muted' }, `${fmt(al.value)} (${al.comparator} ${al.threshold}) · ${ago(al.opened_at)}`),
           al.ack_by ? h('span', { class: 'ab-ack' }, ' ✓ ' + al.ack_by) : null, al.silenced ? h('span', { class: 'ab-ack' }, ' ⏸ bakımda') : null)), e.alerts.length > 4 ? h('li', { class: 'muted small' }, `+${e.alerts.length - 4} alarm daha`) : null)
-          : h('div', { class: 'muted small' }, 'Hizmet erişilemiyor.'));
+          : h('div', { class: 'muted small' }, e.a.status === 'degraded' ? 'Sayfa açılıyor ama bazı alt bileşenlere (probe/senaryo) erişilemiyor.' : 'Hizmet erişilemiyor.'));
     };
     const legend = h('div', { class: 'ab-legend' }, [['critical', 'Kritik'], ['down', 'Erişilemiyor'], ['warning', 'Uyarı'], ['info', 'Bilgi'], ['ok', 'Sağlıklı']].map(([k, l]) => h('span', null, sevShape(k, 16), ' ' + l)));
     let trend = null;
@@ -1525,7 +1527,7 @@
     const f = h('form', { class: 'inline' },
       field('Kural adı', h('input', { id: 'r-name', required: true, maxlength: '200' })),
       field('Metrik', h('input', { id: 'r-metric', required: true, placeholder: 'host.cpu_pct', maxlength: '128', list: 'r-metrics' })),
-      h('datalist', { id: 'r-metrics' }, ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct', 'probe.up', 'probe.latency_ms', 'probe.packet_loss_pct', 'probe.cert_days_left', 'probe.ntp_offset_ms', 'probe.snmp_value', 'probe.dns_answers', 'scenario.up', 'scenario.duration_ms', 'scenario.changes'].map((m) => h('option', { value: m }))),
+      h('datalist', { id: 'r-metrics' }, ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct', 'asset.down', 'asset.degraded', 'probe.up', 'probe.latency_ms', 'probe.packet_loss_pct', 'probe.cert_days_left', 'probe.ntp_offset_ms', 'probe.snmp_value', 'probe.dns_answers', 'scenario.up', 'scenario.duration_ms', 'scenario.changes'].map((m) => h('option', { value: m }))),
       field('Koşul', select('r-cmp', [['>', 'büyükse (>)'], ['<', 'küçükse (<)']])),
       field('Eşik', h('input', { id: 'r-thr', type: 'number', step: 'any', required: true })),
       field('Pencere (sn)', h('input', { id: 'r-win', type: 'number', min: '10', value: '60' })),
@@ -1622,9 +1624,98 @@
     telegram: { label: 'Telegram', help: 'BotFather ile bir bot oluşturup anahtarını girin; sohbet kimliği botun yazacağı kişi veya grubun kimliğidir.', fields: [['token', 'Bot anahtarı', 'secret', ''], ['chat_id', 'Sohbet kimliği', 'text', '']] },
   };
 
+  // ---- SIEM'e log iletimi ----
+  const SIEM_PROTO = [['udp', 'Syslog UDP'], ['tcp', 'Syslog TCP'], ['tls', 'Syslog TLS'], ['http', 'HTTP (Splunk HEC / JSON)']];
+  const SIEM_FMT = [['rfc5424', 'RFC 5424 (syslog)'], ['cef', 'CEF (ArcSight, QRadar, Sentinel)'], ['json', 'JSON']];
+  function siemSection(list) {
+    let editing = null;
+    const msg = h('p', { class: 'msg', role: 'status' });
+    const nameIn = h('input', { required: true, maxlength: '100', placeholder: 'ör. Merkezi SIEM' });
+    const proto = select('s-proto', SIEM_PROTO, 'udp');
+    const fmt = select('s-fmt', SIEM_FMT, 'rfc5424');
+    const host = h('input', { placeholder: 'siem.sirket.local' });
+    const port = h('input', { type: 'number', min: '1', max: '65535', placeholder: '514' });
+    const url = h('input', { placeholder: 'https://splunk.sirket.local:8088/services/collector/event' });
+    const auth = select('s-auth', [['none', 'Yok'], ['splunk', 'Splunk HEC token'], ['bearer', 'Bearer token']], 'none');
+    const token = h('input', { type: 'password', autocomplete: 'new-password' });
+    const app = h('input', { placeholder: 'appmon', maxlength: '48' });
+    const fac = h('input', { type: 'number', min: '0', max: '23', value: '16' });
+    const minSev = select('s-min', [['info', 'Bilgi ve üstü'], ['warning', 'Uyarı ve üstü'], ['critical', 'Yalnızca kritik']], 'info');
+    const skip = h('input', { type: 'checkbox' });
+    const audit = h('input', { type: 'checkbox' }); audit.checked = true;
+    const alerts = h('input', { type: 'checkbox' }); alerts.checked = true;
+    const enabled = h('input', { type: 'checkbox' }); enabled.checked = true;
+    const netBox = h('div', { class: 'inline' }, field('Sunucu', host), field('Port (boş = varsayılan)', port));
+    const httpBox = h('div', { class: 'inline' }, field('Adres (URL)', url), field('Kimlik doğrulama', auth), field('Token', token));
+    const sync = () => { const http = proto.value === 'http'; netBox.hidden = http; httpBox.hidden = !http; fmt.disabled = http; };
+    proto.addEventListener('change', sync);
+    const save = h('button', { type: 'submit', class: 'primary' }, 'Hedefi ekle');
+    const cancel = h('button', { type: 'button', hidden: true, onclick: () => fill(null) }, 'Vazgeç');
+    const title = h('h3', null, 'Yeni SIEM hedefi');
+    const f = h('form', { class: 'stack' },
+      h('div', { class: 'inline' }, field('Ad', nameIn), field('Protokol', proto), field('Biçim', fmt)),
+      netBox, httpBox,
+      h('div', { class: 'inline' }, field('Uygulama adı (app-name)', app), field('Facility (0-23, 16 = local0)', fac), field('Alarmlar için en düşük önem', minSev)),
+      h('div', { class: 'row' }, h('label', { class: 'check' }, audit, 'Denetim kayıtlarını gönder'), h('label', { class: 'check' }, alerts, 'Alarmları gönder (açılış / düzelme)'),
+        h('label', { class: 'check' }, skip, 'TLS sertifika doğrulamasını atla (kendinden imzalı)'), h('label', { class: 'check' }, enabled, 'Etkin')),
+      h('div', { class: 'row' }, save, cancel));
+    const fill = (c) => {
+      editing = c;
+      const g = (c && c.config) || {};
+      nameIn.value = c ? c.name : ''; proto.value = g.protocol || 'udp'; fmt.value = g.format || 'rfc5424'; host.value = g.host || ''; port.value = g.port || '';
+      url.value = g.url || ''; auth.value = g.auth || 'none'; token.value = ''; token.placeholder = c && c.has && c.has.token ? 'değiştirmek için yazın (boş = aynı)' : '';
+      app.value = g.app_name || ''; fac.value = g.facility != null ? g.facility : 16; minSev.value = g.min_severity || 'info'; skip.checked = !!g.skip_tls_verify;
+      audit.checked = c ? !!g.audit : true; alerts.checked = c ? !!g.alerts : true; enabled.checked = c ? c.enabled : true;
+      sync(); save.textContent = c ? 'Kaydet' : 'Hedefi ekle'; cancel.hidden = !c; title.textContent = c ? 'SIEM hedefini düzenle: ' + c.name : 'Yeni SIEM hedefi';
+      if (c) f.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
+    sync();
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); msg.className = 'msg'; msg.textContent = '';
+      const config = { protocol: proto.value, format: fmt.value, app_name: app.value.trim(), facility: Number(fac.value || 0), min_severity: minSev.value,
+        skip_tls_verify: skip.checked, audit: audit.checked, alerts: alerts.checked, token: token.value };
+      if (proto.value === 'http') Object.assign(config, { url: url.value.trim(), auth: auth.value });
+      else Object.assign(config, { host: host.value.trim(), port: port.value ? Number(port.value) : 0 });
+      const body = { name: nameIn.value, config, enabled: enabled.checked };
+      try {
+        if (editing) await api('/api/siem-targets/' + editing.id, { method: 'PUT', body });
+        else await api('/api/siem-targets', { method: 'POST', body });
+        render();
+      } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
+    });
+    const label = (c) => { const g = c.config; return (SIEM_PROTO.find((x) => x[0] === g.protocol) || [0, g.protocol])[1] + ' · ' + (g.protocol === 'http' ? g.url : g.host + ':' + (g.port || '')); };
+    const cards = list.map((c) => {
+      const out = h('span', { class: 'muted small' });
+      const test = h('button', { type: 'button', onclick: async () => {
+        test.disabled = true; out.className = 'muted small'; out.textContent = 'Gönderiliyor…';
+        try {
+          const r = await api(`/api/siem-targets/${c.id}/test`, { method: 'POST' });
+          out.className = r.ok ? 'ok small' : 'error small'; out.textContent = r.ok ? 'Deneme olayı gönderildi.' : 'Başarısız: ' + r.error;
+        } catch (e) { out.className = 'error small'; out.textContent = e.message; }
+        test.disabled = false;
+      } }, 'Deneme gönder');
+      const g = c.config;
+      return h('div', { class: 'ch-card' + (c.enabled ? '' : ' off') },
+        h('div', { class: 'ch-head' }, h('span', { class: 'ch-ico webhook' }, 'S'), h('div', null, h('b', null, c.name), h('div', { class: 'muted small' }, label(c))),
+          h('span', { class: 'spacer' }), c.enabled ? pill('up', 'Etkin') : pill('unknown', 'Kapalı')),
+        h('div', { class: 'muted small' }, [g.format.toUpperCase(), g.audit ? 'denetim' : null, g.alerts ? 'alarmlar' : null].filter(Boolean).join(' · ')),
+        c.last_error ? h('div', { class: 'error small' }, 'Son hata: ' + c.last_error) : (c.last_sent ? h('div', { class: 'muted small' }, 'Son gönderim: ' + ago(c.last_sent)) : h('div', { class: 'muted small' }, 'Henüz gönderim yok')),
+        h('div', { class: 'row' }, test, h('button', { type: 'button', onclick: () => fill(c) }, 'Düzenle'),
+          h('button', { type: 'button', onclick: async () => { try { await api('/api/siem-targets/' + c.id, { method: 'PUT', body: { name: c.name, config: c.config, enabled: !c.enabled } }); render(); } catch (e) { alert(e.message); } } }, c.enabled ? 'Kapat' : 'Aç'),
+          h('button', { type: 'button', class: 'danger', onclick: async () => { if (!window.confirm(`"${c.name}" hedefi silinsin mi?`)) return; try { await api('/api/siem-targets/' + c.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil')),
+        out);
+    });
+    return h('div', { class: 'stack' },
+      h('section', null, h('h2', null, "SIEM'e log gönderimi"),
+        h('p', { class: 'muted' }, "Denetim kayıtları ve alarmlar (açılış/düzelme) seçtiğiniz SIEM'e anlık iletilir. Syslog (UDP/TCP/TLS) veya HTTP (Splunk HEC, genel JSON) kullanılabilir; biçim RFC 5424, CEF veya JSON olabilir. Bakım penceresindeki alarmlar da iletilir (\"bakım penceresinde\" notuyla)."),
+        cards.length ? h('div', { class: 'ch-grid' }, cards) : h('p', { class: 'muted' }, 'Henüz SIEM hedefi yok. Aşağıdan ekleyin.')),
+      h('section', null, h('div', { class: 'panel stack' }, title, f, msg)));
+  }
+
   async function viewBildirimler() {
     await refreshHeader();
     const list = await api('/api/notification-channels');
+    const siemList = await api('/api/siem-targets');
     const msg = h('p', { class: 'msg', role: 'status' });
     let editing = null;
     const kindSel = select('n-kind', Object.entries(CH_KINDS).map(([k, v]) => [k, v.label]));
@@ -1706,7 +1797,8 @@
       h('section', null, h('h2', null, 'Bildirimler'),
         h('p', { class: 'muted' }, 'Alarm açıldığında ve düzeldiğinde seçtiğiniz kanallara otomatik mesaj gider. Bakım penceresindeki hizmetler için bildirim gönderilmez. Parolalar ve anahtarlar gizli saklanır, bu sayfada gösterilmez.'),
         cards.length ? h('div', { class: 'ch-grid' }, cards) : h('p', { class: 'muted' }, 'Henüz kanal yok. Aşağıdan ilk kanalı ekleyin.')),
-      h('section', null, h('div', { class: 'panel stack' }, title, f, msg)));
+      h('section', null, h('div', { class: 'panel stack' }, title, f, msg)),
+      siemSection(siemList));
   }
 
   // ---- Yardım (kullanım kılavuzu) ----
@@ -1742,10 +1834,8 @@
       }
       if ((m = /^\s*-\s+(.*)$/.exec(l))) { if (!ul) { ul = h('ul', null); root.append(ul); } ul.append(h('li', null, mdInline(m[1]))); i++; continue; }
       ul = null;
-      const para = [l];
       i++;
-      while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|\||\s*-\s)/.test(lines[i])) { para.push(lines[i]); i++; }
-      root.append(h('p', null, mdInline(para.join(' '))));
+      root.append(h('p', null, mdInline(l)));
     }
     return root;
   }
@@ -1868,6 +1958,7 @@
       window.APM && window.APM.reports ? window.APM.reports.section() : null,
       h('div', { class: 'grid' },
         h('section', null, h('h3', null, 'Sistem'), h('div', { class: 'panel facts' },
+          fact('Sürüm', info.version || '—'),
           fact('Mod', info.mode === 'saas' ? 'SaaS' : 'On-premise'),
           fact('Veri saklama süresi', info.retention_days + ' gün'),
           fact('Probe\'lar için özel ağ engeli', info.block_private ? 'Açık' : 'Kapalı'),
@@ -2207,7 +2298,7 @@
       ? h('div', { class: 'panel rc-banner' }, h('b', null, 'Olası kök neden: '), t.root_causes.map((id) => names.get(id)).join(', '),
           h('span', { class: 'muted' }, '. Sağlıksız asset\'lerden, bağımlı olduğu hiçbir asset sağlıksız olmayanlar.'))
       : h('div', { class: 'panel muted' }, 'Sağlıksız asset yok; kök neden aranmıyor.');
-    const legend = h('div', { class: 'legend' }, ['up', 'down', 'offline', 'unknown'].map((k) => h('span', { class: 'lg ' + k }, STATUS[k])),
+    const legend = h('div', { class: 'legend' }, ['up', 'degraded', 'down', 'offline', 'unknown'].map((k) => h('span', { class: 'lg ' + k }, STATUS[k])),
       h('span', { class: 'lg rootlg' }, 'Olası kök neden'), h('span', null, 'Kesikli ok: üzerinde çalışır'), h('span', null, '"sayfa değişti": son 24 saatte sayfa yapısı değişti'));
     const shapesLegend = h('div', { class: 'legend shapes' }, ['website', 'webservice', 'service', 'database', 'host', 'network', 'cache', 'queue', 'external']
       .filter((k) => t.nodes.some((n) => n.kind === k) || k !== 'external').map((k) => h('span', { class: 'kl' }, kindIcon(k, 38), KIND[k])));

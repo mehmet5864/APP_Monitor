@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"strings"
@@ -125,6 +126,36 @@ func hasLocalhost(s string) bool {
 	return strings.Contains(s, "localhost") || strings.Contains(s, "127.0.0.1") || strings.Contains(s, "[::1]")
 }
 
+// assetHealth asset'in probe ve senaryolarının son sonuçlarına bakarak durumu belirler:
+// hepsi başarılı = up, hepsi başarısız = down, karışık (sayfa açılıyor ama bazı alt bileşenlere gidilemiyor) = degraded.
+func assetHealth(ctx context.Context, tx *sql.Tx, asset int64) (status string, err error) {
+	var ok, fail int
+	err = tx.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM probes WHERE asset_id = $1 AND enabled AND last_ok) + (SELECT count(*) FROM scenarios WHERE asset_id = $1 AND enabled AND last_ok),
+		(SELECT count(*) FROM probes WHERE asset_id = $1 AND enabled AND NOT last_ok) + (SELECT count(*) FROM scenarios WHERE asset_id = $1 AND enabled AND NOT last_ok)`,
+		asset).Scan(&ok, &fail)
+	switch {
+	case err != nil:
+		return "", err
+	case fail == 0:
+		return "up", nil
+	case ok == 0:
+		return "down", nil
+	}
+	return "degraded", nil
+}
+
+// healthPoints durumu alarm kurallarının kullanacağı ölçümlere çevirir (asset.down, asset.degraded).
+func healthPoints(status string, now time.Time) []point {
+	d, g := 0.0, 0.0
+	if status == "down" {
+		d = 1
+	} else if status == "degraded" {
+		g = 1
+	}
+	return []point{{"asset.down", d, now}, {"asset.degraded", g, now}}
+}
+
 func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency time.Duration, errMsg string, extra map[string]float64) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -133,9 +164,8 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 	defer tx.Rollback()
 	now := time.Now()
 	upVal := 0.0
-	status := "down"
 	if up {
-		upVal, status = 1, "up"
+		upVal = 1
 	}
 	pts := []point{{"probe.up", upVal, now}}
 	if up {
@@ -148,13 +178,18 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 			pts = append(pts, point{"probe." + k, v, now})
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE probes SET last_error = $2, last_ok = $3 WHERE id = $1`, p.id, errMsg, up); err != nil {
+		return
+	}
+	status, err := assetHealth(ctx, tx, p.asset)
+	if err != nil {
+		return
+	}
+	pts = append(pts, healthPoints(status, now)...)
 	if err := insertMetrics(ctx, tx, p.tenant, p.asset, pts); err != nil {
 		return
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = $2, last_seen = now() WHERE id = $1`, p.asset, status); err != nil {
-		return
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE probes SET last_error = $2 WHERE id = $1`, p.id, errMsg); err != nil {
 		return
 	}
 	tx.Commit()
@@ -227,8 +262,11 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 				if err := s.DB.QueryRowContext(ctx,
 					`INSERT INTO alerts (tenant_id, rule_id, asset_id, state, value, silenced) VALUES ($1,$2,$3,'open',$4,$5)
 					 ON CONFLICT (rule_id, asset_id) WHERE state = 'open' DO UPDATE SET value = EXCLUDED.value
-					 RETURNING id, (xmax = 0)`, r.tenant, r.id, asset, avg, maint).Scan(&alertID, &inserted); err == nil && inserted && !maint {
-					s.dispatchAlert(r.tenant, "open", asset, r.name, r.sev, avg, r.thr, r.cmp)
+					 RETURNING id, (xmax = 0)`, r.tenant, r.id, asset, avg, maint).Scan(&alertID, &inserted); err == nil && inserted {
+					s.siemAlert(r.tenant, "open", asset, r.name, r.sev, avg, r.thr, r.cmp, maint)
+					if !maint {
+						s.dispatchAlert(r.tenant, "open", asset, r.name, r.sev, avg, r.thr, r.cmp)
+					}
 				}
 			}
 		}
@@ -261,6 +299,7 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 			}
 			rrows.Close()
 			for _, d := range ds {
+				s.siemAlert(r.tenant, "resolved", d.asset, r.name, r.sev, d.val, r.thr, r.cmp, d.sil)
 				if !d.sil {
 					s.dispatchAlert(r.tenant, "resolved", d.asset, r.name, r.sev, d.val, r.thr, r.cmp)
 				}

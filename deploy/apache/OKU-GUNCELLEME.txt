@@ -1,0 +1,33 @@
+APP_MON - KAPALI ORTAM (RHEL) GUNCELLEME PAKETI
+================================================
+Bu paket, kapali ortamda KURULU olan APP_MON'u yeni surume gunceller.
+Veritabani, ayarlar (/etc/appmon/appmon.env), giris anahtarlari ve tum veriler KORUNUR.
+Internet gerekmez; PostgreSQL/Chrome paketleri bu pakette YOKTUR (zaten kurulu olanlar kullanilir).
+
+GUNCELLEME (hedef sunucuda, root ile):
+    tar xzf appmon-guncelleme-vSURUM.tar.gz
+    cd appmon-guncelleme
+    sha256sum -c SHA256SUMS            # aktarim bozulmadi mi? ("OK" yazmali)
+    sudo ./guncelle-apache.sh
+
+Betik sirasiyla: paket butunlugunu dogrular -> veritabani yedegi alir (/var/backups/appmon, son 7 yedek tutulur)
+-> eski ikili dosyayi appmon-server.prev olarak saklar -> yenisini yukler -> servisi yeniden baslatir
+-> saglik kontrolu yapar. Yeni surum acilmazsa OTOMATIK eski surume doner.
+Veritabani yapisi degisiklikleri (migration) yeni surum acilirken otomatik ve yalnizca ekleyici olarak uygulanir.
+
+Kontrol:
+    systemctl status appmon
+    journalctl -u appmon -f
+    Tarayicida ust cubukta ve Ayarlar > Sistem'de "Surum" gorunur.
+
+Geri alma:
+    sudo ./guncelle-apache.sh --geri-al        (onceki ikili dosyaya doner)
+    Veritabani yedegini geri yuklemek gerekirse (gomulu PostgreSQL):
+      systemctl stop appmon
+      sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d postgres -c 'DROP DATABASE appmon' -c 'CREATE DATABASE appmon OWNER appmon'
+      zcat /var/backups/appmon/appmon-TARIH.sql.gz | sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d appmon
+      systemctl start appmon
+
+Secenekler:  --yedeksiz  (yedegi atla, onerilmez)   --geri-al
+Agent'lar: yeni agent dosyalari /opt/appmon/dist/ altina da yuklenir; izlenen sunuculardaki agent'lar
+calismaya devam eder (guncellemek icin yeni dosyayi o sunuculara kopyalayip agent servisini yeniden baslatin).

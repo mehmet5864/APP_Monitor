@@ -182,9 +182,9 @@ func (s *Server) recordScenario(ctx context.Context, sc scenarioRow, results []s
 	defer tx.Rollback()
 	now := time.Now()
 	ms := float64(dur.Microseconds()) / 1000
-	up, status := 0.0, "down"
+	up := 0.0
 	if ok {
-		up, status = 1, "up"
+		up = 1
 	}
 	stepsJSON, _ := json.Marshal(results)
 	var runID int64
@@ -203,15 +203,20 @@ func (s *Server) recordScenario(ctx context.Context, sc scenarioRow, results []s
 		}
 		pts = append(pts, point{"scenario.changes", float64(bx.changes), now})
 	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE scenarios SET last_run = now(), last_ok = $2, last_error = $3, last_duration_ms = $4 WHERE id = $1`,
+		sc.id, ok, errMsg, ms); err != nil {
+		return
+	}
+	status, err := assetHealth(ctx, tx, sc.asset)
+	if err != nil {
+		return
+	}
+	pts = append(pts, healthPoints(status, now)...)
 	if err := insertMetrics(ctx, tx, sc.tenant, sc.asset, pts); err != nil {
 		return
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = $2, last_seen = now() WHERE id = $1`, sc.asset, status); err != nil {
-		return
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE scenarios SET last_run = now(), last_ok = $2, last_error = $3, last_duration_ms = $4 WHERE id = $1`,
-		sc.id, ok, errMsg, ms); err != nil {
 		return
 	}
 	tx.Commit()

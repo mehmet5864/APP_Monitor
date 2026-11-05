@@ -1,6 +1,7 @@
 package app
 
 import (
+	"appmon/internal/version"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -68,6 +69,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"license":       lic,
+		"version":       version.Version,
 		"by_status":     byStatus,
 		"by_language":   countBy(ctx, s.DB, `SELECT language, count(*) FROM assets WHERE tenant_id = $1 GROUP BY language`, t),
 		"by_collection": countBy(ctx, s.DB, `SELECT collection, count(*) FROM assets WHERE tenant_id = $1 GROUP BY collection`, t),

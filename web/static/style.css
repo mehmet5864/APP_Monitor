@@ -524,7 +524,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent
 @media (prefers-reduced-motion: reduce) {   .kpis .kpi, .ab-tile { animation: none !important; transition: none !important; } }
 
 /* yardım sayfası */
-.help { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+#view > .help { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
 .help-toc { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; padding: 12px; background: var(--panel, #fff); border: 1px solid var(--line, #e3e7ec); border-radius: var(--radius, 10px); }
 .help-toc a { padding: 6px 8px; border-radius: 6px; text-decoration: none; color: inherit; font-size: 13px; }
 .help-toc a:hover { background: rgba(127, 127, 127, .12); }
@@ -533,3 +533,12 @@ tbody tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent
 .help-doc code { padding: 1px 5px; border-radius: 4px; background: rgba(127, 127, 127, .15); font-size: .92em; }
 .help-doc table { width: 100%; }
 @media (max-width: 800px) { .help { grid-template-columns: 1fr; } .help-toc { position: static; } }
+
+/* kısmen erişilemiyor (sarı) */
+.pill.degraded { background: var(--warn-soft); color: var(--warn); }
+.bar .degraded { background: var(--warn); }
+.lg.degraded::before { background: var(--warn); }
+.topo-svg .node.degraded .box, .topo-svg .node.degraded .card { stroke: var(--warn); }
+.topo-svg .node.degraded .dot { fill: var(--warn); }
+
+.tag.ver { background: transparent; border: 1px solid var(--line, #d5dbe1); color: var(--muted, #667); text-transform: none; }
