@@ -197,6 +197,9 @@ func snmpProbe(ctx context.Context, d *net.Dialer, spec Spec, block bool) (map[s
 	if err != nil {
 		return nil, err
 	}
+	if spec.Opts.Version == "3" {
+		return snmpProbeV3(ctx, d, spec, block)
+	}
 	community := spec.Opts.Community
 	if community == "" {
 		community = "public"

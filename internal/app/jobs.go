@@ -142,7 +142,11 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 		pts = append(pts, point{"probe.latency_ms", float64(latency.Microseconds()) / 1000, now})
 	}
 	for k, v := range extra {
-		pts = append(pts, point{"probe." + k, v, now})
+		if strings.HasPrefix(k, "host.") {
+			pts = append(pts, point{k, v, now}) // ana makine ölçümleri agent'ın adlarıyla aynıdır; mevcut kurallar çalışır
+		} else {
+			pts = append(pts, point{"probe." + k, v, now})
+		}
 	}
 	if err := insertMetrics(ctx, tx, p.tenant, p.asset, pts); err != nil {
 		return

@@ -71,10 +71,42 @@ type Options struct {
 	Record    string `json:"record,omitempty"`       // dns: A, AAAA, MX, TXT, CNAME, NS (varsayılan A)
 	Send      string `json:"send,omitempty"`         // tcp/udp: bağlanınca gönderilecek metin (\r \n kullanılabilir)
 	Expect    string `json:"expect,omitempty"`       // tcp/udp/snmp/dns: yanıtta aranacak metin
+
+	// SNMPv3 (USM) kimlik bilgileri; parolalar gizli değerdir.
+	User      string `json:"user,omitempty"`
+	AuthProto string `json:"auth_proto,omitempty"` // MD5, SHA, SHA224, SHA256, SHA384, SHA512 (boş = kimlik doğrulama yok)
+	AuthPass  string `json:"auth_pass,omitempty"`
+	PrivProto string `json:"priv_proto,omitempty"` // DES veya AES (boş = gizlilik yok)
+	PrivPass  string `json:"priv_pass,omitempty"`
+	Context   string `json:"context,omitempty"`
+
+	// host türü: toplanacak ölçümler ("cpu", "mem", "disk"; boş = hepsi)
+	Method  string   `json:"method,omitempty"` // "snmp" (varsayılan) veya "ssh"
+	Metrics []string `json:"metrics,omitempty"`
+}
+
+// SNMPAuth seçeneklerden SNMP kimlik bilgilerini çıkarır.
+func (o Options) SNMPAuth() SNMPAuth {
+	v := o.Version
+	if v == "" {
+		v = "2c"
+	}
+	c := o.Community
+	if c == "" {
+		c = "public"
+	}
+	return SNMPAuth{Version: v, Community: c, User: o.User, AuthProto: o.AuthProto, AuthPass: o.AuthPass,
+		PrivProto: o.PrivProto, PrivPass: o.PrivPass, Context: o.Context}
+}
+
+// HasSecrets hangi gizli alanların dolu olduğunu söyler; Redacted gizli alanları boşaltır.
+func (o Options) Redacted() Options {
+	o.Community, o.AuthPass, o.PrivPass = "", "", ""
+	return o
 }
 
 // Types desteklenen probe türleridir.
-var Types = []string{"http", "tcp", "postgres", "icmp", "snmp", "dns", "tls", "udp", "ntp"}
+var Types = []string{"http", "tcp", "postgres", "icmp", "snmp", "dns", "tls", "udp", "ntp", "host"}
 
 type Spec struct {
 	Type    string // Types içindeki değerlerden biri
@@ -127,6 +159,8 @@ func RunX(ctx context.Context, spec Spec, blockPrivate bool) Result {
 		}
 	case "snmp":
 		extra, err = snmpProbe(ctx, dialer, spec, blockPrivate)
+	case "host":
+		extra, err = hostProbe(ctx, dialer, spec, blockPrivate)
 	case "dns":
 		extra, err = dnsProbe(ctx, dialer, spec)
 	case "tls":

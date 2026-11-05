@@ -274,8 +274,8 @@ func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 		var po probe.Options
 		if json.Unmarshal(optsRaw, &po) == nil && typ != "http" && typ != "postgres" {
 			hasComm := po.Community != ""
-			po.Community = "" // topluluk adı gizlidir, listede gösterilmez
-			it["options"], it["has_community"] = po, hasComm
+			it["has_authpass"], it["has_privpass"] = po.AuthPass != "", po.PrivPass != ""
+			it["options"], it["has_community"] = po.Redacted(), hasComm // topluluk adı ve parolalar gizlidir
 		}
 		if last.Valid {
 			it["last_run"] = last.Time
@@ -322,7 +322,7 @@ func validateTarget(typ, target string) error {
 		if !probe.ValidHost(target) {
 			return errors.New(typ + " hedefi geçerli bir ad veya IP olmalı (şema/port olmadan)")
 		}
-	case "snmp", "tls", "ntp":
+	case "snmp", "tls", "ntp", "host":
 		host := target
 		if h, _, err := splitHostPort(target); err == nil {
 			host = h
@@ -349,17 +349,57 @@ func validateOptions(typ string, o *probe.Options) error {
 			return errors.New("paket sayısı 1 ile 10 arasında olmalı")
 		}
 		keep.Count = o.Count
-	case "snmp":
-		if o.OID != "" && !probe.ValidOID(o.OID) {
+	case "snmp", "host":
+		if typ == "snmp" && o.OID != "" && !probe.ValidOID(o.OID) {
 			return errors.New("OID 1.3.6.1.2.1.1.3.0 gibi noktalı sayılar olmalı")
 		}
-		if o.Version != "" && o.Version != "1" && o.Version != "2c" {
-			return errors.New("snmp_version 1 veya 2c olmalı")
+		if o.Version != "" && o.Version != "1" && o.Version != "2c" && o.Version != "3" {
+			return errors.New("snmp_version 1, 2c veya 3 olmalı")
 		}
-		if len(o.Community) > 100 {
-			return errors.New("topluluk adı en fazla 100 karakter olabilir")
+		if len(o.Community) > 100 || len(o.User) > 100 || len(o.AuthPass) > 200 || len(o.PrivPass) > 200 || len(o.Context) > 100 {
+			return errors.New("kimlik bilgisi alanları çok uzun")
 		}
 		keep = probe.Options{Community: o.Community, OID: o.OID, Version: o.Version, Expect: o.Expect}
+		if typ == "host" {
+			keep.OID, keep.Expect = "", ""
+			if o.Method != "" && o.Method != "snmp" {
+				return errors.New("yöntem snmp olmalı (ssh bu sürümde yok)")
+			}
+			keep.Method = "snmp"
+			for _, m := range o.Metrics {
+				if m != "cpu" && m != "mem" && m != "disk" {
+					return errors.New("ölçümler cpu, mem veya disk olmalı")
+				}
+			}
+			keep.Metrics = o.Metrics
+		}
+		if o.Version == "3" {
+			keep.Community = ""
+			if strings.TrimSpace(o.User) == "" {
+				return errors.New("SNMPv3 için kullanıcı adı zorunlu")
+			}
+			ap, pp := strings.ToUpper(o.AuthProto), strings.ToUpper(o.PrivProto)
+			switch ap {
+			case "", "MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512":
+			default:
+				return errors.New("kimlik doğrulama protokolü MD5, SHA, SHA224, SHA256, SHA384 veya SHA512 olmalı")
+			}
+			switch pp {
+			case "", "DES", "AES":
+			default:
+				return errors.New("gizlilik protokolü DES veya AES olmalı")
+			}
+			if ap == "" && pp != "" {
+				return errors.New("gizlilik için kimlik doğrulama da seçilmeli")
+			}
+			if ap != "" && len(o.AuthPass) < 8 {
+				return errors.New("kimlik doğrulama parolası en az 8 karakter olmalı")
+			}
+			if pp != "" && len(o.PrivPass) < 8 {
+				return errors.New("gizlilik parolası en az 8 karakter olmalı")
+			}
+			keep.User, keep.AuthProto, keep.AuthPass, keep.PrivProto, keep.PrivPass, keep.Context = strings.TrimSpace(o.User), ap, o.AuthPass, pp, o.PrivPass, o.Context
+		}
 	case "dns":
 		switch strings.ToUpper(o.Record) {
 		case "", "A", "AAAA", "MX", "TXT", "CNAME", "NS":
@@ -492,7 +532,7 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		kind := req.AssetKind
 		if kind == "" {
-			kind = map[string]string{"http": "website", "tcp": "service", "postgres": "database", "icmp": "host", "snmp": "network", "dns": "service", "tls": "website", "udp": "service", "ntp": "service"}[req.Type]
+			kind = map[string]string{"http": "website", "tcp": "service", "postgres": "database", "icmp": "host", "snmp": "network", "host": "host", "dns": "service", "tls": "website", "udp": "service", "ntp": "service"}[req.Type]
 		}
 		if !validKind(kind) {
 			fail(w, 400, "asset_kind geçersiz")
@@ -964,8 +1004,16 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	json.Unmarshal(optsRaw, &opts)
 	if req.Options != nil && typ != "http" && typ != "postgres" {
 		n := *req.Options
-		if typ == "snmp" && n.Community == "" {
-			n.Community = opts.Community // boş bırakılırsa eski topluluk adı korunur
+		if typ == "snmp" || typ == "host" { // boş bırakılan gizli alanlar eski değeri korur
+			if n.Community == "" {
+				n.Community = opts.Community
+			}
+			if n.AuthPass == "" {
+				n.AuthPass = opts.AuthPass
+			}
+			if n.PrivPass == "" {
+				n.PrivPass = opts.PrivPass
+			}
 		}
 		opts = n
 	}

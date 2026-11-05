@@ -78,7 +78,8 @@ Bu çıktı Linux (amd64) içindir. Başka platformlar için `GOOS`/`GOARCH` ile
 | `http` | URL | durum kodu, gecikme |
 | `tcp` | host:port | bağlantı; isteğe bağlı gönder/bekle (banner, Redis PING) |
 | `icmp` | host/IP | ortalama RTT, `probe.packet_loss_pct` (paket sayısı seçilebilir) |
-| `snmp` | host[:161] | v1/v2c GET; `probe.snmp_value` (sayısal OID); topluluk adı gizli saklanır; SNMPv3 yok |
+| `snmp` | host[:161] | v1/v2c/v3 GET; `probe.snmp_value` (sayısal OID); topluluk adı ve v3 parolaları gizli saklanır |
+| `host` | host[:161] | SNMP ile CPU/RAM/Disk: `host.cpu_pct`, `host.mem_pct`, `host.disk_pct` (en dolu disk), `host.disk_pct.<ad>` (her disk), `host.uptime_sec` |
 | `dns` | alan adı | çözümleme süresi; kayıt türü A/AAAA/MX/TXT/CNAME/NS, özel sunucu, beklenen yanıt; `probe.dns_answers` |
 | `tls` | host[:443] | el sıkışma; `probe.cert_days_left` (sertifika bitimine kalan gün) |
 | `udp` | host:port | gönder/yanıt bekle |
@@ -272,3 +273,11 @@ Rol, API anahtarı oluştururken seçilir (Lisans ve anahtarlar). Üst bar'da ro
 Migration `011_roles.sql` açılışta otomatik uygulanır; yalnızca `api_keys.role` kısıtını genişletir, veri silmez. Mevcut anahtarlar (admin/agent) aynen çalışır.
 1. Önerilen yedek: `sudo -u postgres pg_dump appmon > appmon-yedek.sql` (gömülü PG ise paketteki pg_dump ile, port 5433).
 2. Yeni paketi aç, `sudo ./kur-apache.sh` çalıştır — `/etc/appmon/appmon.env`, veritabanı ve anahtar korunur; sadece ikili dosya değişir.
+
+## yama27 — Sunucu kaynakları probe'u (agent'sız CPU / RAM / Disk) ve SNMPv3
+
+- Yeni probe türü **Sunucu kaynakları (host)**: hedef sunucunun SNMP'sinden (Host Resources MIB) CPU, RAM ve tüm diskler okunur. Linux için `snmpd`, Windows için "SNMP Hizmeti" açık olmalı. Ölçümler agent'ın kullandığı `host.*` adlarıyla yazıldığı için hazır alarm kuralları (Yüksek CPU, Yüksek bellek, Disk dolmak üzere) hiçbir ayar yapmadan çalışır. Her disk ayrıca `host.disk_pct.<ad>` olarak yazılır (ör. `host.disk_pct./var`, `host.disk_pct.C:\`); bölüme özel kural için bu adı kullanın.
+- **SNMPv3 (USM)**: kimlik doğrulama MD5, SHA, SHA-224/256/384/512; gizlilik DES, AES-128. noAuthNoPriv, authNoPriv ve authPriv düzeyleri. `snmp` ve `host` probe'larında geçerli. Parolalar (en az 8 karakter) ve topluluk adı gizli saklanır; düzenlerken boş bırakılırsa eski değer korunur.
+- Linux RAM: `Cached memory` ve `Memory buffers` satırları kullanılan bellekten düşülür. CPU: `hrProcessorLoad` ortalaması (yoksa UCD `ssCpuIdle`).
+- Veritabanı: `012_host_probe.sql` yalnızca tür kısıtını genişletir; mevcut veri değişmez, açılışta otomatik uygulanır.
+- Henüz yok: SSH ile ölçüm, WinRM, SNMP trap alımı.

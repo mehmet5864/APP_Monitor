@@ -616,13 +616,14 @@
     return o.join(' · ');
   }
 
-  const PROBE_TYPES = [['http', 'HTTP / HTTPS'], ['tcp', 'TCP bağlantı'], ['icmp', 'ICMP (ping)'], ['snmp', 'SNMP (v1/v2c)'], ['dns', 'DNS sorgusu'],
+  const PROBE_TYPES = [['http', 'HTTP / HTTPS'], ['tcp', 'TCP bağlantı'], ['icmp', 'ICMP (ping)'], ['snmp', 'SNMP (v1/v2c/v3)'], ['host', 'Sunucu kaynakları — CPU / RAM / Disk (SNMP)'], ['dns', 'DNS sorgusu'],
     ['tls', 'TLS sertifikası (süre)'], ['udp', 'UDP'], ['ntp', 'NTP (saat sapması)'], ['postgres', 'PostgreSQL']];
-  const PROBE_HINTS = { http: 'https://ornek.com/health', tcp: 'sunucu.ornek.com:5432', icmp: '10.0.0.1 veya sunucu.ornek.com', snmp: '10.0.0.1 veya 10.0.0.1:161',
+  const PROBE_HINTS = { http: 'https://ornek.com/health', tcp: 'sunucu.ornek.com:5432', icmp: '10.0.0.1 veya sunucu.ornek.com', snmp: '10.0.0.1 veya 10.0.0.1:161', host: 'sunucu-ip veya sunucu-ip:161',
     dns: 'ornek.com', tls: 'ornek.com veya ornek.com:8443', udp: 'sunucu.ornek.com:514', ntp: 'pool.ntp.org',
     postgres: 'postgres://kullanici:parola@host:5432/veritabani?sslmode=disable' };
   const PROBE_HELP = { icmp: 'Paket kaybı % ve ortalama RTT ölçülür. Konteynerde ayrıcalıksız ICMP için sysctl gerekir (docker-compose.yml içinde ayarlı).',
-    snmp: 'Topluluk adı gizli saklanır ve listede gösterilmez. SNMPv3 desteklenmez. Sayısal değer "probe.snmp_value" metriği olur.',
+    snmp: 'Topluluk adı ve v3 parolaları gizli saklanır, listede gösterilmez. Sayısal değer "probe.snmp_value" metriği olur.',
+    host: 'Hedef sunucunun SNMP\'si açık olmalı (Linux: snmpd, Windows: SNMP Hizmeti). CPU, RAM ve tüm diskler Host Resources MIB\'den okunur; "host.cpu_pct", "host.mem_pct", "host.disk_pct" (en dolu disk) ve her disk için "host.disk_pct.<ad>" metrikleri üretilir — hazır alarm kuralları çalışır. SNMPv3 (kimlik doğrulama + gizlilik) önerilir.',
     dns: 'Çözümleme süresi ölçülür; "Beklenen" doluysa yanıtta aranır. Özel DNS sunucusu verebilirsiniz.',
     tls: 'Sertifikanın kalan gün sayısı "probe.cert_days_left" metriği olur (alarm kuralı: Sertifika süresi doluyor).',
     udp: 'UDP bağlantısızdır: yanıt gelirse başarılı sayılır. Yanıt vermeyen servisler için uygun değildir.',
@@ -630,10 +631,40 @@
     tcp: 'İsteğe bağlı: bağlanınca metin gönderip yanıtta metin arayabilirsiniz (ör. SSH- banner\'ı, Redis PING).' };
   const SNMP_OIDS = [['1.3.6.1.2.1.1.3.0', 'sysUpTime'], ['1.3.6.1.2.1.1.1.0', 'sysDescr'], ['1.3.6.1.2.1.1.5.0', 'sysName'], ['1.3.6.1.2.1.2.1.0', 'ifNumber (arayüz sayısı)'], ['1.3.6.1.2.1.25.3.3.1.2.1', 'hrProcessorLoad (CPU %)']];
 
+  // SNMP kimlik alanları (v1/v2c topluluk adı; v3 kullanıcı, kimlik doğrulama ve gizlilik). Parolalar gizli saklanır.
+  function snmpCred(o, p) {
+    o = o || {}; p = p || {};
+    const sec = (ph) => h('input', { type: 'password', autocomplete: 'new-password', placeholder: ph });
+    const ver = select(null, [['2c', 'v2c'], ['1', 'v1'], ['3', 'v3 (USM)']], o.snmp_version || '2c');
+    const cm = sec(p.has_community ? 'değiştirmek için yazın (boş = aynı)' : 'public');
+    const user = h('input', { value: o.user || '', autocomplete: 'off', maxlength: '100' });
+    const ap = select(null, [['', 'Yok (noAuth)'], ['SHA', 'SHA'], ['SHA256', 'SHA-256'], ['SHA512', 'SHA-512'], ['MD5', 'MD5']], o.auth_proto || '');
+    const apw = sec(p.has_authpass ? 'değiştirmek için yazın (boş = aynı)' : 'en az 8 karakter');
+    const pp = select(null, [['', 'Yok'], ['AES', 'AES-128'], ['DES', 'DES']], o.priv_proto || '');
+    const ppw = sec(p.has_privpass ? 'değiştirmek için yazın (boş = aynı)' : 'en az 8 karakter');
+    const fc = field('Topluluk adı', cm);
+    const v3 = [field('Kullanıcı adı', user), field('Kimlik doğrulama', ap), field('Doğrulama parolası', apw), field('Gizlilik (şifreleme)', pp), field('Gizlilik parolası', ppw)];
+    const sync = () => { const is3 = ver.value === '3'; fc.hidden = is3; v3.forEach((e) => { e.hidden = !is3; }); };
+    ver.addEventListener('change', sync); sync();
+    return { els: [field('Sürüm', ver), fc, ...v3], read: () => ({ snmp_version: ver.value, community: cm.value, user: user.value.trim(), auth_proto: ap.value, auth_pass: apw.value, priv_proto: pp.value, priv_pass: ppw.value }) };
+  }
+  const HOST_METRICS = [['cpu', 'CPU'], ['mem', 'RAM'], ['disk', 'Disk']];
+  function metricBoxes(sel) {
+    const boxes = HOST_METRICS.map(([k, l]) => { const c = h('input', { type: 'checkbox' }); c.checked = !sel || !sel.length || sel.includes(k); return [k, c, h('label', { class: 'check' }, c, l)]; });
+    return { el: h('div', { class: 'row' }, ...boxes.map((b) => b[2])), read: () => { const m = boxes.filter((b) => b[1].checked).map((b) => b[0]); return m.length === boxes.length ? [] : m; } };
+  }
+
   function optSummary(p) {
     const o = p.options || {}, r = [];
     if (o.count) r.push(o.count + ' paket');
-    if (p.type === 'snmp') r.push('OID ' + (o.oid || '1.3.6.1.2.1.1.3.0'), 'v' + (o.snmp_version || '2c'), p.has_community ? 'topluluk gizli' : 'topluluk: public');
+    if (p.type === 'snmp') r.push('OID ' + (o.oid || '1.3.6.1.2.1.1.3.0'));
+    if (p.type === 'snmp' || p.type === 'host') {
+      const v = o.snmp_version || '2c';
+      r.push('SNMP v' + v);
+      if (v === '3') r.push('kullanıcı ' + (o.user || '?'), o.auth_proto ? (o.auth_proto + (o.priv_proto ? '/' + o.priv_proto : '')) : 'doğrulamasız');
+      else r.push(p.has_community ? 'topluluk gizli' : 'topluluk: public');
+    }
+    if (p.type === 'host') r.push(!o.metrics || !o.metrics.length ? 'CPU/RAM/Disk' : o.metrics.map((m) => ({ cpu: 'CPU', mem: 'RAM', disk: 'Disk' }[m])).join('/'));
     if (o.record) r.push(o.record + ' kaydı');
     if (o.server) r.push('sunucu ' + o.server);
     if (o.send) r.push('gönderir');
@@ -667,12 +698,13 @@
         h('label', { class: 'check' }, h('input', { id: 'p-redir', type: 'checkbox', checked: true }), 'Yönlendirmeleri izle')));
     f.insertBefore(adv, f.lastChild);
     adv.style.gridColumn = '1 / -1';
+    const cred = snmpCred(), metrics = metricBoxes();
     // Türe özgü seçenekler: her alan hangi türlerde görüneceğini 'types' ile belirtir.
     const optFields = [
       ['icmp', field('Paket sayısı', h('input', { id: 'o-count', type: 'number', min: '1', max: '10', value: '3' }))],
-      ['snmp', field('Topluluk adı', h('input', { id: 'o-comm', type: 'password', autocomplete: 'off', placeholder: 'public' }))],
+      ['snmp host', ...cred.els],
+      ['host', metrics.el],
       ['snmp', field('OID', h('input', { id: 'o-oid', list: 'o-oids', placeholder: '1.3.6.1.2.1.1.3.0' })), h('datalist', { id: 'o-oids' }, SNMP_OIDS.map(([v, l]) => h('option', { value: v }, l)))],
-      ['snmp', field('Sürüm', select('o-ver', [['2c', 'v2c'], ['1', 'v1']]))],
       ['dns', field('Kayıt türü', select('o-rec', ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS'].map((x) => [x, x])))],
       ['dns', field('DNS sunucusu (isteğe bağlı)', h('input', { id: 'o-srv', placeholder: '8.8.8.8 veya 10.0.0.53:53' }))],
       ['tcp udp', field('Gönderilecek metin (\\r \\n kullanılabilir)', h('input', { id: 'o-send', maxlength: '1024', placeholder: 'PING\\r\\n' }))],
@@ -694,6 +726,7 @@
       optBox.hidden = !optItems.some((it) => it.types.includes(t));
       tlsBox.hidden = t !== 'tls';
       help.textContent = PROBE_HELP[t] || ''; help.hidden = !PROBE_HELP[t];
+      const tmo = $('#p-timeout', f); if (t === 'host' && tmo.value === '5000') tmo.value = '15000'; else if (t !== 'host' && tmo.value === '15000') tmo.value = '5000';
     };
     $('#p-type', f).addEventListener('change', syncType);
     syncType();
@@ -713,7 +746,9 @@
         }
         const t = body.type, o = {}, val = (id) => $(id, f).value.trim();
         if (t === 'icmp') o.count = Number(val('#o-count')) || 3;
-        if (t === 'snmp') Object.assign(o, { community: $('#o-comm', f).value, oid: val('#o-oid'), snmp_version: val('#o-ver') });
+        if (t === 'snmp' || t === 'host') Object.assign(o, cred.read());
+        if (t === 'snmp') o.oid = val('#o-oid');
+        if (t === 'host') { o.method = 'snmp'; o.metrics = metrics.read(); }
         if (t === 'dns') Object.assign(o, { record: val('#o-rec'), server: val('#o-srv') });
         if (t === 'tcp' || t === 'udp') o.send = $('#o-send', f).value;
         if (['tcp', 'udp', 'snmp', 'dns'].includes(t)) o.expect = $('#o-expect', f).value;
@@ -743,9 +778,13 @@
           if (hd.value.trim()) r.headers = parseHeaders(hd.value); if (bd.value) r.body = bd.value; return r; };
       } else if (p.type === 'icmp') { const c = inp(o.count || 3, { type: 'number', min: '1', max: '10' }); extra.push(field('Paket sayısı', c)); collect = () => ({ options: { count: Number(c.value) || 3 } }); }
       else if (p.type === 'snmp') {
-        const cm = h('input', { type: 'password', autocomplete: 'new-password', placeholder: p.has_community ? 'değiştirmek için yazın (boş = aynı)' : 'public' }), oid = inp(o.oid, { list: 'pe-oids' }), ver = select(null, [['2c', 'v2c'], ['1', 'v1']], o.snmp_version || '2c'), ex = inp(o.expect);
-        extra.push(h('datalist', { id: 'pe-oids' }, SNMP_OIDS.map(([v, t]) => h('option', { value: v }, t))), h('div', { class: 'inline' }, field('Topluluk adı', cm), field('OID', oid), field('Sürüm', ver), field('Yanıtta aranacak metin', ex)));
-        collect = () => ({ options: { community: cm.value, oid: oid.value.trim(), snmp_version: ver.value, expect: ex.value } });
+        const cr = snmpCred(o, p), oid = inp(o.oid, { list: 'pe-oids' }), ex = inp(o.expect);
+        extra.push(h('datalist', { id: 'pe-oids' }, SNMP_OIDS.map(([v, t]) => h('option', { value: v }, t))), h('div', { class: 'inline' }, ...cr.els, field('OID', oid), field('Yanıtta aranacak metin', ex)));
+        collect = () => ({ options: { ...cr.read(), oid: oid.value.trim(), expect: ex.value } });
+      } else if (p.type === 'host') {
+        const cr = snmpCred(o, p), mb = metricBoxes(o.metrics);
+        extra.push(h('div', { class: 'inline' }, ...cr.els), field('Ölçümler', mb.el));
+        collect = () => ({ options: { ...cr.read(), method: 'snmp', metrics: mb.read() } });
       } else if (p.type === 'dns') {
         const rec = select(null, ['A', 'AAAA', 'MX', 'TXT', 'CNAME', 'NS'].map((x) => [x, x]), o.record || 'A'), sv = inp(o.server, { placeholder: 'isteğe bağlı' }), ex = inp(o.expect);
         extra.push(h('div', { class: 'inline' }, field('Kayıt türü', rec), field('DNS sunucusu', sv), field('Yanıtta aranacak metin', ex)));
