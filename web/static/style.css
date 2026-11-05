@@ -522,3 +522,14 @@ tbody tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent
 .ab-tile, .ab-banner { border-radius: var(--radius); box-shadow: var(--shadow); }
 .ab-tile { transition: transform .15s; } .ab-tile:hover { transform: translateY(-2px); }
 @media (prefers-reduced-motion: reduce) {   .kpis .kpi, .ab-tile { animation: none !important; transition: none !important; } }
+
+/* yardım sayfası */
+.help { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: start; }
+.help-toc { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; padding: 12px; background: var(--panel, #fff); border: 1px solid var(--line, #e3e7ec); border-radius: var(--radius, 10px); }
+.help-toc a { padding: 6px 8px; border-radius: 6px; text-decoration: none; color: inherit; font-size: 13px; }
+.help-toc a:hover { background: rgba(127, 127, 127, .12); }
+.help-doc { max-width: 860px; line-height: 1.6; }
+.help-doc h2 { margin-top: 28px; padding-bottom: 6px; border-bottom: 1px solid var(--line, #e3e7ec); scroll-margin-top: 12px; }
+.help-doc code { padding: 1px 5px; border-radius: 4px; background: rgba(127, 127, 127, .15); font-size: .92em; }
+.help-doc table { width: 100%; }
+@media (max-width: 800px) { .help { grid-template-columns: 1fr; } .help-toc { position: static; } }

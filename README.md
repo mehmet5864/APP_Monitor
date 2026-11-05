@@ -296,4 +296,4 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 - **Ortam değişkeni** `APM_PUBLIC_URL`: bildirimlerdeki bağlantının adresi (ör. `https://apm.sirket.local`).
 - **Veritabanı**: `013_notifications.sql` yalnızca yeni tablo/sütun ekler; mevcut veri değişmez, açılışta otomatik uygulanır.
 - MAPI Docker/Linux'ta çalışmaz (SMTP/Graph/EWS kullanın). EWS modern kimlik doğrulamayı (OAuth) desteklemez.
-- Kullanım kılavuzu: `KULLANIM-KILAVUZU.md`.
+- Kullanım kılavuzu: `KULLANIM-KILAVUZU.md`; uygulamada menüde **Yardım** sayfası olarak da açılır (`web/static/kilavuz.md`, KILAVUZ değişince ikisini de güncelleyin).

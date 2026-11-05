@@ -135,7 +135,7 @@
   // ---- Üst çubuk ----
   const VIEWS = [
     ['genel', 'Genel bakış'], ['assetler', 'Assetler'], ['topoloji', 'Topoloji'], ['probelar', 'Probe\'lar'], ['senaryolar', 'Senaryolar'],
-    ['alarmlar', 'Alarmlar'], ['bildirimler', 'Bildirimler'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'],
+    ['alarmlar', 'Alarmlar'], ['bildirimler', 'Bildirimler'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'], ['yardim', 'Yardım'],
   ];
 
   // ---- Yetki rolleri ----
@@ -1709,6 +1709,55 @@
       h('section', null, h('div', { class: 'panel stack' }, title, f, msg)));
   }
 
+  // ---- Yardım (kullanım kılavuzu) ----
+  function mdInline(t) {
+    const out = [];
+    const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let last = 0, m;
+    while ((m = re.exec(t))) {
+      if (m.index > last) out.push(t.slice(last, m.index));
+      out.push(m[0][0] === '`' ? h('code', null, m[0].slice(1, -1)) : h('b', null, m[0].slice(2, -2)));
+      last = m.index + m[0].length;
+    }
+    if (last < t.length) out.push(t.slice(last));
+    return out;
+  }
+  function mdRender(src) {
+    const root = h('div', { class: 'help-doc' });
+    const lines = src.split('\n');
+    let i = 0, ul = null;
+    const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((x) => x.trim());
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.trim()) { ul = null; i++; continue; }
+      let m;
+      if ((m = /^(#{1,3})\s+(.*)$/.exec(l))) { ul = null; root.append(h('h' + m[1].length, { id: 'h-' + i }, mdInline(m[2]))); i++; continue; }
+      if (l.trim().startsWith('|') && /^\|?\s*-{3,}/.test(lines[i + 1] || '')) {
+        const head = cells(l); i += 2;
+        const rows = [];
+        while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(cells(lines[i])); i++; }
+        root.append(h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, head.map((c) => h('th', null, mdInline(c))))),
+          h('tbody', null, rows.map((r) => h('tr', null, r.map((c) => h('td', null, mdInline(c)))))))));
+        ul = null; continue;
+      }
+      if ((m = /^\s*-\s+(.*)$/.exec(l))) { if (!ul) { ul = h('ul', null); root.append(ul); } ul.append(h('li', null, mdInline(m[1]))); i++; continue; }
+      ul = null;
+      const para = [l];
+      i++;
+      while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|\||\s*-\s)/.test(lines[i])) { para.push(lines[i]); i++; }
+      root.append(h('p', null, mdInline(para.join(' '))));
+    }
+    return root;
+  }
+  async function viewYardim() {
+    const res = await fetch('/kilavuz.md', { cache: 'no-cache' });
+    if (!res.ok) throw new Error('Kılavuz yüklenemedi');
+    const doc = mdRender(await res.text());
+    const toc = h('nav', { class: 'help-toc', 'aria-label': 'İçindekiler' }, [...doc.querySelectorAll('h2')].map((x) =>
+      h('a', { href: '#yardim', onclick: (e) => { e.preventDefault(); x.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, x.textContent)));
+    return h('div', { class: 'help' }, toc, doc);
+  }
+
   async function viewLisans() {
     const o = await refreshHeader();
     const lic = o.license;
@@ -2223,7 +2272,7 @@
       h('section', null, h('h3', null, 'Bağlantı tanımla'), h('div', { class: 'panel' }, form, msg)));
   }
 
-  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, bildirimler: viewBildirimler, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar };
+  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, bildirimler: viewBildirimler, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar, yardim: viewYardim };
   const AUTO = new Set(['genel', 'assetler', 'topoloji']);
 
   function current() {
