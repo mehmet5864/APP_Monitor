@@ -176,7 +176,7 @@ func (s *Server) markOffline(ctx context.Context) {
 // evaluateAlerts her kural için pencere ortalamasını eşikle karşılaştırır; ihlalde alarm açar, düzelince kapatır.
 func (s *Server) evaluateAlerts(ctx context.Context) {
 	rules, err := s.DB.QueryContext(ctx,
-		`SELECT id, tenant_id, metric, comparator, threshold, window_sec FROM alert_rules WHERE enabled`)
+		`SELECT id, tenant_id, metric, comparator, threshold, window_sec, name, severity, asset_ids, group_name, tag FROM alert_rules WHERE enabled`)
 	if err != nil {
 		log.Printf("kural sorgusu: %v", err)
 		return
@@ -186,11 +186,14 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 		metric, cmp string
 		thr         float64
 		win         int
+		name, sev   string
+		assets      []int64
+		group, tag  string
 	}
 	var list []rule
 	for rules.Next() {
 		var r rule
-		if rules.Scan(&r.id, &r.tenant, &r.metric, &r.cmp, &r.thr, &r.win) == nil {
+		if rules.Scan(&r.id, &r.tenant, &r.metric, &r.cmp, &r.thr, &r.win, &r.name, &r.sev, pq.Array(&r.assets), &r.group, &r.tag) == nil {
 			list = append(list, r)
 		}
 	}
@@ -199,8 +202,12 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 	for _, r := range list {
 		rows, err := s.DB.QueryContext(ctx,
 			`SELECT asset_id, avg(value) FROM metrics
-			 WHERE tenant_id = $1 AND name = $2 AND time > now() - make_interval(secs => $3) GROUP BY asset_id`,
-			r.tenant, r.metric, r.win)
+			 WHERE tenant_id = $1 AND name = $2 AND time > now() - make_interval(secs => $3)
+			   AND (cardinality($4::bigint[]) = 0 OR asset_id = ANY($4::bigint[]))
+			   AND ($5 = '' OR asset_id IN (SELECT id FROM assets WHERE tenant_id = $1 AND grp = $5))
+			   AND ($6 = '' OR asset_id IN (SELECT id FROM assets WHERE tenant_id = $1 AND $6 = ANY(tags)))
+			 GROUP BY asset_id`,
+			r.tenant, r.metric, r.win, pq.Array(r.assets), r.group, r.tag)
 		if err != nil {
 			continue
 		}
@@ -214,10 +221,15 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 			seen = append(seen, asset)
 			if (r.cmp == ">" && avg > r.thr) || (r.cmp == "<" && avg < r.thr) {
 				breached = append(breached, asset)
-				s.DB.ExecContext(ctx,
-					`INSERT INTO alerts (tenant_id, rule_id, asset_id, state, value) VALUES ($1,$2,$3,'open',$4)
-					 ON CONFLICT (rule_id, asset_id) WHERE state = 'open' DO UPDATE SET value = EXCLUDED.value`,
-					r.tenant, r.id, asset, avg)
+				var alertID int64
+				var inserted bool
+				maint := s.inMaintenance(ctx, r.tenant, asset)
+				if err := s.DB.QueryRowContext(ctx,
+					`INSERT INTO alerts (tenant_id, rule_id, asset_id, state, value, silenced) VALUES ($1,$2,$3,'open',$4,$5)
+					 ON CONFLICT (rule_id, asset_id) WHERE state = 'open' DO UPDATE SET value = EXCLUDED.value
+					 RETURNING id, (xmax = 0)`, r.tenant, r.id, asset, avg, maint).Scan(&alertID, &inserted); err == nil && inserted && !maint {
+					s.dispatchAlert(r.tenant, "open", asset, r.name, r.sev, avg, r.thr, r.cmp)
+				}
 			}
 		}
 		rows.Close()
@@ -227,13 +239,33 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 		if stale < 600 {
 			stale = 600
 		}
-		s.DB.ExecContext(ctx,
+		if rrows, err := s.DB.QueryContext(ctx,
 			`UPDATE alerts SET state = 'resolved', resolved_at = now()
 			 WHERE rule_id = $1 AND state = 'open' AND NOT (asset_id = ANY($2::bigint[]))
 			   AND (asset_id = ANY($3::bigint[])
 			        OR NOT EXISTS (SELECT 1 FROM metrics m WHERE m.asset_id = alerts.asset_id AND m.name = $4
-			                       AND m.time > now() - make_interval(secs => $5)))`,
-			r.id, pq.Array(breached), pq.Array(seen), r.metric, stale)
+			                       AND m.time > now() - make_interval(secs => $5)))
+			 RETURNING asset_id, value, silenced`,
+			r.id, pq.Array(breached), pq.Array(seen), r.metric, stale); err == nil {
+			type done struct {
+				asset int64
+				val   float64
+				sil   bool
+			}
+			var ds []done
+			for rrows.Next() {
+				var d done
+				if rrows.Scan(&d.asset, &d.val, &d.sil) == nil {
+					ds = append(ds, d)
+				}
+			}
+			rrows.Close()
+			for _, d := range ds {
+				if !d.sil {
+					s.dispatchAlert(r.tenant, "resolved", d.asset, r.name, r.sev, d.val, r.thr, r.cmp)
+				}
+			}
+		}
 	}
 }
 

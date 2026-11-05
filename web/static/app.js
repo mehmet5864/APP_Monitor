@@ -64,7 +64,7 @@
   }
 
   // Liste filtreleri: durum modül düzeyinde tutulur (10 sn'lik otomatik yenilemede kaybolmaz).
-  const FILTERS = { assetler: { q: '', status: '', kind: '', coll: '' }, probelar: { q: '', type: '', res: '' } };
+  const FILTERS = { assetler: { q: '', status: '', kind: '', coll: '', group: '' }, probelar: { q: '', type: '', res: '' } };
   function filterBar(state, specs, tbl, total) {
     const count = h('span', { class: 'muted small fcount', role: 'status' });
     const apply = () => {
@@ -135,12 +135,12 @@
   // ---- Üst çubuk ----
   const VIEWS = [
     ['genel', 'Genel bakış'], ['assetler', 'Assetler'], ['topoloji', 'Topoloji'], ['probelar', 'Probe\'lar'], ['senaryolar', 'Senaryolar'],
-    ['alarmlar', 'Alarmlar'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'],
+    ['alarmlar', 'Alarmlar'], ['bildirimler', 'Bildirimler'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'],
   ];
 
   // ---- Yetki rolleri ----
   const ROLE_LABEL = { admin: 'Yönetici', operator: 'İşletmeci', viewer: 'İzleyici', agent: 'Agent' };
-  const ADMIN_ONLY = ['lisans', 'denetim'];
+  const ADMIN_ONLY = ['lisans', 'denetim', 'bildirimler'];
   let ME = { label: '', role: 'admin' };
   const canWrite = () => ME.role === 'admin' || ME.role === 'operator';
   async function loadMe() {
@@ -153,7 +153,7 @@
   }
   // İzleyici rolünde değiştirme düğmelerini devre dışı bırakır (asıl denetim sunucudadır: 403).
   const KEEP_SEL = '#login, .top-right, #findbar, .filters, #report-modal, .report-cards, .seg, .ctx-menu, .lightbox, .keep';
-  const WRITE_TXT = /^(Sil|Ekle|Kaydet|Değiştir|Düzenle|Oluştur|Güncelle|Çalıştır|Şimdi|Kaydı başlat|Kaydı bitir|Bağlantı ekle|Probe ekle|Kural ekle|Anahtar oluştur|Senaryoyu kaydet|Giriş|Girişi|Bilgileri|Adımı|\+ Adım|Gruptaki|Kaydet ve|Yerleşimi sıfırla)/;
+  const WRITE_TXT = /^(Sil|Ekle|Kaydet|Değiştir|Düzenle|Oluştur|Güncelle|Çalıştır|Şimdi|Kaydı başlat|Kaydı bitir|Bağlantı ekle|Probe ekle|Kural ekle|Anahtar oluştur|Senaryoyu kaydet|Giriş|Girişi|Bilgileri|Adımı|\+ Adım|Gruptaki|Kaydet ve|Yerleşimi sıfırla|Üstlen|Pencere|Kanalı)/;
   function lockCtl(b) { b.disabled = true; b.classList.add('locked'); b.title = 'Bu işlem için yetkiniz yok (izleyici rolü yalnızca görüntüleyebilir).'; }
   function enforceRole(root) {
     if (ME.role !== 'viewer') return;
@@ -513,14 +513,22 @@
   }
 
   function alertTable(list, withResolved) {
-    const head = ['Önem', 'Kural', 'Asset', 'Değer', 'Açılış'].concat(withResolved ? ['Kapanış'] : []);
+    const head = ['Önem', 'Kural', 'Asset', 'Değer', 'Açılış'].concat(withResolved ? ['Kapanış'] : ['Durum']);
+    const ackBtn = (a) => h('button', { type: 'button', class: 'small', onclick: async () => {
+      const note = window.prompt('Not (isteğe bağlı) — örn. "VPN hattını kontrol ediyorum"', '');
+      if (note === null) return;
+      try { await api(`/api/alerts/${a.id}/ack`, { method: 'POST', body: { note } }); render(); } catch (e) { alert(e.message); }
+    } }, 'Üstleniyorum');
     return table(head, list.map((a) => h('tr', null,
       h('td', null, pill(a.severity, SEV[a.severity])),
       h('td', null, a.rule),
       h('td', null, a.asset),
       h('td', { class: 'mono' }, `${fmt(a.value)} (${a.comparator} ${a.threshold})`),
       h('td', { class: 'mono small' }, ago(a.opened_at)),
-      withResolved ? h('td', { class: 'mono small' }, a.resolved_at ? ago(a.resolved_at) : '—') : null)),
+      withResolved ? h('td', { class: 'mono small' }, a.resolved_at ? ago(a.resolved_at) : '—')
+        : h('td', null, a.silenced ? [pill('info', 'bakımda'), ' '] : null,
+            a.ack_by ? h('span', null, pill('up', 'üstlenildi'), ' ', h('span', { class: 'small' }, a.ack_by + (a.ack_note ? ': ' + a.ack_note : '')), ' ',
+              h('button', { type: 'button', class: 'small linklike', onclick: async () => { try { await api(`/api/alerts/${a.id}/ack`, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'geri al')) : ackBtn(a)))),
       'Açık alarm yok.');
   }
 
@@ -528,17 +536,18 @@
     await refreshHeader();
     const assets = await api('/api/assets');
     const rows = assets.map((a) => h('tr', { class: 'click' + (a.id === selectedAsset ? ' sel' : ''), tabindex: '0', 'data-id': a.id,
-      'data-search': [a.name, KIND[a.kind], a.kind, STATUS[a.status], LANG[a.language]].join(' ').toLowerCase(), 'data-status': a.status, 'data-kind': a.kind === 'url' ? 'website' : a.kind, 'data-coll': a.collection },
+      'data-search': [a.name, KIND[a.kind], a.kind, STATUS[a.status], LANG[a.language], a.group, (a.tags || []).join(' ')].join(' ').toLowerCase(), 'data-status': a.status, 'data-group': a.group || '', 'data-kind': a.kind === 'url' ? 'website' : a.kind, 'data-coll': a.collection },
       h('td', null, h('span', { class: 'kl' }, kindIcon(a.kind, 30), h('b', null, a.name))),
       h('td', null, KIND[a.kind] || a.kind),
       h('td', null, LANG[a.language]),
       h('td', null, a.collection === 'agent' ? 'Agent' : 'Agent\'sız'),
       h('td', null, pill(a.status, STATUS[a.status])),
+      h('td', { class: 'small' }, a.group || '—', (a.tags || []).length ? h('div', null, a.tags.map((t) => h('span', { class: 'tagchip' }, t))) : null),
       h('td', { class: 'mono' }, a.latest['host.cpu_pct'] != null ? fmt(a.latest['host.cpu_pct']) + '%' : '—'),
       h('td', { class: 'mono' }, a.latest['host.mem_pct'] != null ? fmt(a.latest['host.mem_pct']) + '%' : '—'),
       h('td', { class: 'mono' }, a.latest['probe.latency_ms'] != null ? fmt(a.latest['probe.latency_ms']) + ' ms' : '—'),
       h('td', { class: 'mono small' }, ago(a.last_seen))));
-    const t = table(['Ad', 'Tür', 'Dil', 'Toplama', 'Durum', 'CPU', 'Bellek', 'Gecikme', 'Son veri'], rows,
+    const t = table(['Ad', 'Tür', 'Dil', 'Toplama', 'Durum', 'Grup / etiket', 'CPU', 'Bellek', 'Gecikme', 'Son veri'], rows,
       'Henüz asset yok. Probe\'lar sayfasından izleme ekleyin veya bir agent bağlayın.');
     const detail = h('section', { id: 'detail' });
     const open = (id) => { selectedAsset = id; render(); };
@@ -557,7 +566,8 @@
     const fb = filterBar(FILTERS.assetler, [{ key: 'q', label: 'Ara (ad, tür, durum…)', type: 'text' },
       { key: 'status', label: 'Durum', type: 'select', options: Object.entries(STATUS) },
       { key: 'kind', label: 'Tür', type: 'select', options: kinds },
-      { key: 'coll', label: 'Toplama', type: 'select', options: [['agent', 'Agent'], ['agentless', 'Agent\'sız']] }], t, assets.length);
+      { key: 'coll', label: 'Toplama', type: 'select', options: [['agent', 'Agent'], ['agentless', 'Agent\'sız']] },
+      { key: 'group', label: 'Grup', type: 'select', options: groupsOf(assets).map((g) => [g, g]) }], t, assets.length);
     const wrap = h('div', { style: null }, h('section', null, h('h2', null, 'Assetler'), sum, fb, t), detail);
     const sel = assets.find((a) => a.id === selectedAsset);
     if (sel) await fillDetail(detail, sel);
@@ -589,6 +599,13 @@
     kindSel.addEventListener('change', async () => {
       try { await api('/api/assets/' + asset.id, { method: 'PATCH', body: { kind: kindSel.value } }); render(); } catch (e) { alert(e.message); }
     });
+    const grp = h('input', { value: asset.group || '', maxlength: '60', placeholder: 'ör. Üretim', list: 'grp-list' });
+    const tgs = h('input', { value: (asset.tags || []).join(', '), placeholder: 'ör. web, kritik' });
+    const metaMsg = h('span', { class: 'muted small' });
+    const saveMeta = h('button', { type: 'button', onclick: async () => {
+      try { await api(`/api/assets/${asset.id}/meta`, { method: 'PUT', body: { group: grp.value, tags: tgs.value.split(',').map((x) => x.trim()).filter(Boolean) } }); metaMsg.textContent = 'Kaydedildi.'; render(); }
+      catch (e) { metaMsg.className = 'error small'; metaMsg.textContent = e.message; }
+    } }, 'Grup/etiket kaydet');
     const names = Object.keys(data).sort();
     root.replaceChildren(
       h('div', { class: 'row' }, h('h3', null, `${asset.name}: son 60 dakika`),
@@ -597,6 +614,7 @@
           if (!window.confirm(`"${asset.name}" silinsin mi? Tüm metrikleri de silinir.`)) return;
           try { await api('/api/assets/' + asset.id, { method: 'DELETE' }); selectedAsset = null; render(); } catch (e) { alert(e.message); }
         } }, 'Asset\'i sil'))),
+      h('div', { class: 'row meta-row' }, field('Grup', grp), field('Etiketler (virgülle ayırın)', tgs), saveMeta, metaMsg),
       names.length
         ? h('div', { class: 'panel sparks' }, names.map((n) => {
             const pts = data[n];
@@ -1381,7 +1399,7 @@
       { name: 'Sayfa yapısı değişti', metric: 'scenario.changes', comparator: '>', threshold: 0, window_sec: 300, severity: 'info', desc: 'Son iki kontrolde sayfa yapısı farklı (dinamik içerik elenir)' }] },
   ];
   const ruleKey = (r) => `${r.metric}|${r.comparator}|${r.threshold}`;
-  const ruleBody = (r) => ({ name: r.name, metric: r.metric, comparator: r.comparator, threshold: r.threshold, window_sec: r.window_sec, severity: r.severity });
+  const ruleBody = (r) => ({ name: r.name, metric: r.metric, comparator: r.comparator, threshold: r.threshold, window_sec: r.window_sec, severity: r.severity, asset_ids: r.asset_ids || [], group: r.group || '', tag: r.tag || '' });
 
   // Alarm panosu: sorunlu hizmetler önem derecesine göre renk ve şekille gösterilir.
   // Kritik = kırmızı sekizgen, Uyarı = sarı üçgen, Bilgi = mavi daire, Erişilemiyor = kırmızı çarpılı daire, Sağlıklı = yeşil daire.
@@ -1424,7 +1442,8 @@
           h('span', { class: 'ab-n' }, String(e.alerts.length || (lvl === 'down' ? '!' : '')))),
         e.alerts.length ? h('ul', { class: 'ab-list' }, e.alerts.slice(0, 4).map((al) => h('li', null,
           h('span', { class: 'ab-dot ' + al.severity }), h('span', null, al.rule), ' ',
-          h('span', { class: 'mono small muted' }, `${fmt(al.value)} (${al.comparator} ${al.threshold}) · ${ago(al.opened_at)}`))), e.alerts.length > 4 ? h('li', { class: 'muted small' }, `+${e.alerts.length - 4} alarm daha`) : null)
+          h('span', { class: 'mono small muted' }, `${fmt(al.value)} (${al.comparator} ${al.threshold}) · ${ago(al.opened_at)}`),
+          al.ack_by ? h('span', { class: 'ab-ack' }, ' ✓ ' + al.ack_by) : null, al.silenced ? h('span', { class: 'ab-ack' }, ' ⏸ bakımda') : null)), e.alerts.length > 4 ? h('li', { class: 'muted small' }, `+${e.alerts.length - 4} alarm daha`) : null)
           : h('div', { class: 'muted small' }, 'Hizmet erişilemiyor.'));
     };
     const legend = h('div', { class: 'ab-legend' }, [['critical', 'Kritik'], ['down', 'Erişilemiyor'], ['warning', 'Uyarı'], ['info', 'Bilgi'], ['ok', 'Sağlıklı']].map(([k, l]) => h('span', null, sevShape(k, 16), ' ' + l)));
@@ -1449,9 +1468,58 @@
       trend, legend);
   }
 
+  const groupsOf = (assets) => [...new Set(assets.map((a) => a.group).filter(Boolean))].sort();
+  const tagsOf = (assets) => [...new Set(assets.flatMap((a) => a.tags || []))].sort();
+  function scopeText(r, assets) {
+    const p = [];
+    if (r.asset_ids && r.asset_ids.length) p.push(r.asset_ids.map((id) => (assets.find((a) => a.id === id) || { name: '#' + id }).name).join(', '));
+    if (r.group) p.push('grup: ' + r.group);
+    if (r.tag) p.push('etiket: ' + r.tag);
+    return p.join(' · ');
+  }
+  const fmtDT = (iso) => new Date(iso).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' });
+  const toLocalInput = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+
+  function maintenanceSection(maint, assets) {
+    const msg = h('p', { class: 'msg', role: 'status' });
+    const now = new Date(), later = new Date(now.getTime() + 3600e3);
+    const nm = h('input', { required: true, maxlength: '200', placeholder: 'ör. Aylık yama penceresi' });
+    const st = h('input', { type: 'datetime-local', required: true, value: toLocalInput(now) });
+    const en = h('input', { type: 'datetime-local', required: true, value: toLocalInput(later) });
+    const rp = select(null, [['', 'Tek seferlik'], ['daily', 'Her gün'], ['weekly', 'Her hafta']]);
+    const as = h('select', { multiple: true, size: '3' }, assets.map((a) => h('option', { value: String(a.id) }, a.name)));
+    const gr = select(null, [['', 'Hepsi']].concat(groupsOf(assets).map((g) => [g, g])));
+    const tg = h('input', { maxlength: '40', placeholder: 'boş = hepsi', list: 'tag-list' });
+    const f = h('form', { class: 'inline' }, field('Ad', nm), field('Başlangıç', st), field('Bitiş', en), field('Tekrar', rp),
+      field('Hizmetler (boş = hepsi)', as), field('Grup', gr), field('Etiket', tg), h('button', { type: 'submit', class: 'primary' }, 'Pencere ekle'));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); msg.className = 'msg'; msg.textContent = '';
+      try {
+        await api('/api/maintenance', { method: 'POST', body: { name: nm.value, starts_at: new Date(st.value).toISOString(), ends_at: new Date(en.value).toISOString(), repeat: rp.value,
+          asset_ids: [...as.selectedOptions].map((o) => Number(o.value)), group: gr.value, tag: tg.value.trim() } });
+        render();
+      } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
+    });
+    const nowT = Date.now();
+    const state = (m) => {
+      const a = new Date(m.starts_at).getTime(), b = new Date(m.ends_at).getTime();
+      if (!m.repeat) return nowT < a ? 'planlı' : nowT <= b ? 'şu an aktif' : 'geçti';
+      const per = (m.repeat === 'daily' ? 86400e3 : 604800e3);
+      return nowT >= a && (nowT - a) % per <= b - a ? 'şu an aktif' : 'tekrarlıyor';
+    };
+    const rows = maint.map((m) => h('tr', null, h('td', null, h('b', null, m.name)), h('td', { class: 'mono small' }, fmtDT(m.starts_at) + ' → ' + fmtDT(m.ends_at)),
+      h('td', null, ({ '': 'Tek seferlik', daily: 'Her gün', weekly: 'Her hafta' })[m.repeat]), h('td', { class: 'small' }, scopeText(m, assets) || 'Tüm hizmetler'),
+      h('td', null, state(m) === 'şu an aktif' ? pill('warning', 'şu an aktif') : pill('unknown', state(m))),
+      h('td', { class: 'actions' }, h('button', { type: 'button', class: 'danger', onclick: async () => { try { await api('/api/maintenance/' + m.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil'))));
+    return h('section', null, h('h3', null, 'Bakım pencereleri'),
+      h('p', { class: 'muted' }, 'Planlı bir çalışma sırasında (yama, yeniden başlatma) seçilen hizmetlerin alarmları açılır ama bildirim gönderilmez; alarmlarda "bakımda" etiketi görünür.'),
+      table(['Ad', 'Zaman', 'Tekrar', 'Kapsam', 'Durum', ''], rows, 'Bakım penceresi yok.'),
+      h('div', { class: 'panel stack' }, h('h3', null, 'Yeni bakım penceresi'), f, msg));
+  }
+
   async function viewAlarmlar() {
     await refreshHeader();
-    const [rules, open, resolved, assetsAll, dash] = await Promise.all([api('/api/alert-rules'), api('/api/alerts?state=open'), api('/api/alerts?state=resolved'), api('/api/assets').catch(() => []), api('/api/dashboard').catch(() => null)]);
+    const [rules, open, resolved, assetsAll, dash, maint] = await Promise.all([api('/api/alert-rules'), api('/api/alerts?state=open'), api('/api/alerts?state=resolved'), api('/api/assets').catch(() => []), api('/api/dashboard').catch(() => null), api('/api/maintenance').catch(() => [])]);
     const msg = h('p', { class: 'msg', role: 'status' });
     let editing = null;
     const f = h('form', { class: 'inline' },
@@ -1462,6 +1530,10 @@
       field('Eşik', h('input', { id: 'r-thr', type: 'number', step: 'any', required: true })),
       field('Pencere (sn)', h('input', { id: 'r-win', type: 'number', min: '10', value: '60' })),
       field('Önem', select('r-sev', [['warning', 'Uyarı'], ['critical', 'Kritik'], ['info', 'Bilgi']])),
+      field('Kapsam: hizmetler (boş = hepsi)', h('select', { id: 'r-assets', multiple: true, size: '3' }, assetsAll.map((a) => h('option', { value: String(a.id) }, a.name)))),
+      field('Kapsam: grup', select('r-group', [['', 'Hepsi']].concat(groupsOf(assetsAll).map((g) => [g, g])))),
+      field('Kapsam: etiket', h('input', { id: 'r-tag', maxlength: '40', placeholder: 'boş = hepsi', list: 'tag-list' })),
+      h('datalist', { id: 'tag-list' }, tagsOf(assetsAll).map((t) => h('option', { value: t }))),
       h('button', { type: 'submit', class: 'primary', id: 'r-save' }, 'Kural ekle'),
       h('button', { type: 'button', id: 'r-cancel', hidden: true }, 'Vazgeç'));
     const formTitle = h('h3', null, 'Yeni kural');
@@ -1469,6 +1541,8 @@
       $('#r-name', f).value = r ? r.name : ''; $('#r-metric', f).value = r ? r.metric : '';
       $('#r-cmp', f).value = r ? r.comparator : '>'; $('#r-thr', f).value = r ? String(r.threshold) : '';
       $('#r-win', f).value = r ? String(r.window_sec) : '60'; $('#r-sev', f).value = r ? r.severity : 'warning';
+      for (const o of $('#r-assets', f).options) o.selected = !!(r && r.asset_ids && r.asset_ids.includes(Number(o.value)));
+      $('#r-group', f).value = r && r.group ? r.group : ''; $('#r-tag', f).value = r && r.tag ? r.tag : '';
       editing = r; formTitle.textContent = r ? `Kuralı düzenle: ${r.name}` : 'Yeni kural';
       $('#r-save', f).textContent = r ? 'Kaydet' : 'Kural ekle'; $('#r-cancel', f).hidden = !r;
       if (r) f.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1478,7 +1552,8 @@
       e.preventDefault();
       msg.className = 'msg'; msg.textContent = '';
       const body = { name: $('#r-name', f).value, metric: $('#r-metric', f).value, comparator: $('#r-cmp', f).value,
-        threshold: Number($('#r-thr', f).value), window_sec: Number($('#r-win', f).value), severity: $('#r-sev', f).value };
+        threshold: Number($('#r-thr', f).value), window_sec: Number($('#r-win', f).value), severity: $('#r-sev', f).value,
+        asset_ids: [...$('#r-assets', f).selectedOptions].map((o) => Number(o.value)), group: $('#r-group', f).value, tag: $('#r-tag', f).value.trim() };
       try {
         if (editing) await api('/api/alert-rules/' + editing.id, { method: 'PUT', body: { ...body, enabled: editing.enabled } });
         else await api('/api/alert-rules', { method: 'POST', body });
@@ -1487,7 +1562,7 @@
     });
     const toggle = async (r) => { try { await api('/api/alert-rules/' + r.id, { method: 'PUT', body: { ...ruleBody(r), enabled: !r.enabled } }); render(); } catch (e) { alert(e.message); } };
     const rows = rules.map((r) => h('tr', { class: r.enabled ? '' : 'off' },
-      h('td', null, h('b', null, r.name), r.enabled ? null : [' ', pill('unknown', 'kapalı')]), h('td', { class: 'mono small' }, `${r.metric} ${r.comparator} ${r.threshold}`),
+      h('td', null, h('b', null, r.name), r.enabled ? null : [' ', pill('unknown', 'kapalı')]), h('td', { class: 'mono small' }, `${r.metric} ${r.comparator} ${r.threshold}`, scopeText(r, assetsAll) ? h('div', { class: 'muted' }, 'kapsam: ' + scopeText(r, assetsAll)) : null),
       h('td', { class: 'mono' }, r.window_sec + ' sn'), h('td', null, pill(r.severity, SEV[r.severity])),
       h('td', { class: 'actions' },
         h('button', { type: 'button', onclick: () => fill(r) }, 'Düzenle'),
@@ -1524,8 +1599,114 @@
         h('p', { class: 'muted' }, 'Kural, pencere içindeki ortalama değeri eşikle karşılaştırır. Kuralı düzenleyince açık alarmları kapanır; koşul sürüyorsa yeniden açılır.'),
         table(['Ad', 'Koşul', 'Pencere', 'Önem', ''], rows, 'Kural yok.'),
         h('div', { class: 'panel stack' }, formTitle, f, msg)),
+      maintenanceSection(maint, assetsAll),
       h('section', null, h('h3', null, 'Hazır şablonlar'), h('p', { class: 'muted' }, 'Tek tıkla ekleyin ya da "Düzenleyip ekle" ile eşiği kendinize göre değiştirin.'), gallery),
       h('section', null, h('h3', null, 'Kapanan alarmlar'), alertTable(resolved, true)));
+  }
+
+  // ---- Bildirimler (yalnızca yönetici) ----
+  const CH_SECRET = { pass: 'pass', client_secret: 'client_secret', token: 'token' };
+  const CH_KINDS = {
+    smtp: { label: 'E-posta (SMTP)', help: 'Her e-posta sunucusunda çalışır. Exchange kullanıyorsanız SMTP alıcı bağlayıcısı açık olmalıdır. Kimlik bilgileriniz şifresiz bağlantıda gönderilmesin diye STARTTLS veya SSL/TLS seçin.',
+      fields: [['host', 'Sunucu', 'text', 'smtp.sirket.com'], ['port', 'Port (boş = otomatik)', 'number', '587'], ['security', 'Güvenlik', 'select', [['starttls', 'STARTTLS (587)'], ['ssl', 'SSL/TLS (465)'], ['none', 'Şifresiz (25) — önerilmez']]],
+        ['user', 'Kullanıcı (isteğe bağlı)', 'text', ''], ['pass', 'Parola', 'secret', ''], ['from', 'Gönderen', 'text', 'APP_MON <izleme@sirket.com>'], ['to', 'Alıcılar (virgülle ayırın)', 'text', 'ekip@sirket.com, nobet@sirket.com'], ['skip_tls_verify', 'Sertifika doğrulamasını atla (kendinden imzalı sertifika)', 'check']] },
+    graph: { label: 'Microsoft 365 / Exchange Online (Graph)', help: 'Azure\'da bir uygulama kaydı oluşturun, "Mail.Send" uygulama iznini verin ve yönetici onayı ekleyin. Gönderen, bu uygulamanın adına gönderebildiği bir posta kutusu olmalıdır. Modern kimlik doğrulama; MAPI\'nin bulut karşılığıdır.',
+      fields: [['tenant_id', 'Dizin (tenant) kimliği', 'text', ''], ['client_id', 'Uygulama (client) kimliği', 'text', ''], ['client_secret', 'İstemci sırrı', 'secret', ''], ['from', 'Gönderen posta kutusu', 'text', 'izleme@sirket.com'], ['to', 'Alıcılar (virgülle ayırın)', 'text', '']] },
+    ews: { label: 'Exchange Web Services (EWS)', help: 'Şirket içi Exchange sunucuları için. Yalnızca temel (Basic) kimlik doğrulama desteklenir; sunucunuz yalnızca NTLM/Kerberos kabul ediyorsa SMTP veya Graph kullanın.',
+      fields: [['url', 'EWS adresi', 'text', 'https://mail.sirket.com/EWS/Exchange.asmx'], ['user', 'Kullanıcı', 'text', 'DOMAIN\\kullanici veya kullanici@sirket.com'], ['pass', 'Parola', 'secret', ''], ['to', 'Alıcılar (virgülle ayırın)', 'text', '']] },
+    mapi: { label: 'MAPI (Outlook, yalnızca Windows)', help: 'Outlook\'un MAPI arayüzüyle gönderir. YALNIZCA APP_MON Windows\'ta doğrudan (Docker olmadan) çalışıyorsa ve aynı bilgisayarda Outlook kurulu, bir profil açıksa çalışır. Docker/Linux kurulumlarında SMTP, Graph veya EWS seçin.',
+      fields: [['to', 'Alıcılar (virgülle ayırın)', 'text', ''], ['account', 'Outlook hesabı (boş = varsayılan)', 'text', 'izleme@sirket.com']] },
+    webhook: { label: 'Webhook (genel JSON)', help: 'Adrese olay bilgisini JSON olarak POST eder (olay, önem, hizmet, kural, değer, zaman, bağlantı).', fields: [['url', 'Adres', 'text', 'https://ornek.com/hook']] },
+    slack: { label: 'Slack', help: 'Slack\'te "Incoming Webhook" oluşturup adresini yapıştırın.', fields: [['url', 'Webhook adresi', 'text', 'https://hooks.slack.com/services/…']] },
+    teams: { label: 'Microsoft Teams', help: 'Kanal için gelen webhook (veya Workflows) adresi.', fields: [['url', 'Webhook adresi', 'text', '']] },
+    telegram: { label: 'Telegram', help: 'BotFather ile bir bot oluşturup anahtarını girin; sohbet kimliği botun yazacağı kişi veya grubun kimliğidir.', fields: [['token', 'Bot anahtarı', 'secret', ''], ['chat_id', 'Sohbet kimliği', 'text', '']] },
+  };
+
+  async function viewBildirimler() {
+    await refreshHeader();
+    const list = await api('/api/notification-channels');
+    const msg = h('p', { class: 'msg', role: 'status' });
+    let editing = null;
+    const kindSel = select('n-kind', Object.entries(CH_KINDS).map(([k, v]) => [k, v.label]));
+    const nameIn = h('input', { id: 'n-name', required: true, maxlength: '100', placeholder: 'ör. Nöbetçi ekip e-postası' });
+    const minSel = select('n-min', [['info', 'Bilgi ve üstü'], ['warning', 'Uyarı ve üstü'], ['critical', 'Yalnızca kritik']], 'warning');
+    const onRes = h('input', { type: 'checkbox' }); onRes.checked = true;
+    const enabled = h('input', { type: 'checkbox' }); enabled.checked = true;
+    const help = h('p', { class: 'muted small' });
+    const box = h('div', { class: 'inline' });
+    let inputs = {};
+    const drawFields = (cfg, has) => {
+      const spec = CH_KINDS[kindSel.value];
+      help.textContent = spec.help;
+      inputs = {};
+      box.replaceChildren(...spec.fields.map(([key, label, type, ph]) => {
+        let el;
+        if (type === 'select') { el = select(null, ph, (cfg && cfg[key]) || ph[0][0]); }
+        else if (type === 'check') { el = h('input', { type: 'checkbox' }); el.checked = !!(cfg && cfg[key]); inputs[key] = el; return h('label', { class: 'check' }, el, label); }
+        else if (type === 'secret') { el = h('input', { type: 'password', autocomplete: 'new-password', placeholder: has && has[CH_SECRET[key]] ? 'değiştirmek için yazın (boş = aynı)' : ph }); }
+        else { el = h('input', { type: type === 'number' ? 'number' : 'text', value: cfg && cfg[key] != null ? String(cfg[key]) : '', placeholder: ph || '' }); }
+        inputs[key] = el;
+        return field(label, el);
+      }));
+    };
+    kindSel.addEventListener('change', () => drawFields(null, null));
+    drawFields(null, null);
+    const save = h('button', { type: 'submit', class: 'primary' }, 'Kanalı ekle');
+    const cancel = h('button', { type: 'button', hidden: true, onclick: () => fill(null) }, 'Vazgeç');
+    const title = h('h3', null, 'Yeni bildirim kanalı');
+    const f = h('form', { class: 'stack' },
+      h('div', { class: 'inline' }, field('Ad', nameIn), field('Tür', kindSel), field('Gönderilecek önem', minSel)),
+      h('div', { class: 'row' }, h('label', { class: 'check' }, onRes, 'Düzelince de bildir'), h('label', { class: 'check' }, enabled, 'Etkin')),
+      help, box, h('div', { class: 'row' }, save, cancel));
+    const fill = (c) => {
+      editing = c;
+      kindSel.value = c ? c.kind : 'smtp'; nameIn.value = c ? c.name : ''; minSel.value = c ? c.min_severity : 'warning';
+      onRes.checked = c ? c.on_resolve : true; enabled.checked = c ? c.enabled : true;
+      drawFields(c ? c.config : null, c ? c.has : null);
+      kindSel.disabled = !!c; save.textContent = c ? 'Kaydet' : 'Kanalı ekle'; cancel.hidden = !c; title.textContent = c ? 'Kanalı düzenle: ' + c.name : 'Yeni bildirim kanalı';
+      if (c) f.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); msg.className = 'msg'; msg.textContent = '';
+      const config = {};
+      for (const [k, el] of Object.entries(inputs)) {
+        if (el.type === 'checkbox') config[k] = el.checked;
+        else if (el.type === 'number') { if (el.value) config[k] = Number(el.value); }
+        else config[k] = el.value.trim();
+      }
+      const body = { name: nameIn.value, kind: kindSel.value, config, min_severity: minSel.value, on_resolve: onRes.checked, enabled: enabled.checked };
+      try {
+        if (editing) await api('/api/notification-channels/' + editing.id, { method: 'PUT', body });
+        else await api('/api/notification-channels', { method: 'POST', body });
+        render();
+      } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; }
+    });
+    const cards = list.map((c) => {
+      const out = h('span', { class: 'muted small' });
+      const test = h('button', { type: 'button', onclick: async () => {
+        test.disabled = true; out.className = 'muted small'; out.textContent = 'Gönderiliyor…';
+        try {
+          const r = await api(`/api/notification-channels/${c.id}/test`, { method: 'POST' });
+          out.className = r.ok ? 'ok small' : 'error small'; out.textContent = r.ok ? 'Deneme mesajı gönderildi.' : 'Başarısız: ' + r.error;
+        } catch (e) { out.className = 'error small'; out.textContent = e.message; }
+        test.disabled = false;
+      } }, 'Deneme gönder');
+      return h('div', { class: 'ch-card' + (c.enabled ? '' : ' off') },
+        h('div', { class: 'ch-head' }, h('span', { class: 'ch-ico ' + c.kind }, (CH_KINDS[c.kind] || {}).label ? CH_KINDS[c.kind].label.charAt(0) : '?'),
+          h('div', null, h('b', null, c.name), h('div', { class: 'muted small' }, (CH_KINDS[c.kind] || {}).label || c.kind)),
+          h('span', { class: 'spacer' }), c.enabled ? pill('up', 'Etkin') : pill('unknown', 'Kapalı')),
+        h('div', { class: 'muted small' }, ({ info: 'Bilgi ve üstü', warning: 'Uyarı ve üstü', critical: 'Yalnızca kritik' })[c.min_severity] + (c.on_resolve ? ' · düzelince de bildirir' : '')),
+        c.last_error ? h('div', { class: 'error small' }, 'Son hata: ' + c.last_error) : (c.last_sent ? h('div', { class: 'muted small' }, 'Son gönderim: ' + ago(c.last_sent)) : h('div', { class: 'muted small' }, 'Henüz gönderim yok')),
+        h('div', { class: 'row' }, test, h('button', { type: 'button', onclick: () => fill(c) }, 'Düzenle'),
+          h('button', { type: 'button', onclick: async () => { try { await api('/api/notification-channels/' + c.id, { method: 'PUT', body: { name: c.name, kind: c.kind, config: c.config, min_severity: c.min_severity, on_resolve: c.on_resolve, enabled: !c.enabled } }); render(); } catch (e) { alert(e.message); } } }, c.enabled ? 'Kapat' : 'Aç'),
+          h('button', { type: 'button', class: 'danger', onclick: async () => { if (!window.confirm(`"${c.name}" kanalı silinsin mi?`)) return; try { await api('/api/notification-channels/' + c.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); } } }, 'Sil')),
+        out);
+    });
+    return h('div', null,
+      h('section', null, h('h2', null, 'Bildirimler'),
+        h('p', { class: 'muted' }, 'Alarm açıldığında ve düzeldiğinde seçtiğiniz kanallara otomatik mesaj gider. Bakım penceresindeki hizmetler için bildirim gönderilmez. Parolalar ve anahtarlar gizli saklanır, bu sayfada gösterilmez.'),
+        cards.length ? h('div', { class: 'ch-grid' }, cards) : h('p', { class: 'muted' }, 'Henüz kanal yok. Aşağıdan ilk kanalı ekleyin.')),
+      h('section', null, h('div', { class: 'panel stack' }, title, f, msg)));
   }
 
   async function viewLisans() {
@@ -2042,7 +2223,7 @@
       h('section', null, h('h3', null, 'Bağlantı tanımla'), h('div', { class: 'panel' }, form, msg)));
   }
 
-  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar };
+  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, bildirimler: viewBildirimler, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar };
   const AUTO = new Set(['genel', 'assetler', 'topoloji']);
 
   function current() {

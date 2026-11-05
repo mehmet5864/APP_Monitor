@@ -285,3 +285,15 @@ Migration `011_roles.sql` açılışta otomatik uygulanır; yalnızca `api_keys.
 ## yama28 — Alarm panosu
 
 Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu hizmetlerin kartları, sağlıklı hizmetler ve son 24 saatin alarm grafiği. Hizmetler en kötü durumuna göre renk ve şekille gösterilir: Kritik = kırmızı sekizgen, Erişilemiyor = kırmızı çarpılı daire, Uyarı = sarı üçgen, Bilgi = mavi daire, Sağlıklı = yeşil daire. Yalnızca arayüz değişikliğidir; veritabanı ve API değişmedi.
+
+## yama29 — Bildirimler, bakım pencereleri, üstlenme, kapsam, grup/etiket, görsel yenileme
+
+- **Bildirim kanalları** (Bildirimler sayfası, yalnızca admin): SMTP (STARTTLS/SSL), Microsoft Graph, Exchange EWS (Basic), Windows MAPI (Outlook, yalnızca Windows'ta yerel çalışan APP_MON), Webhook, Slack, Teams, Telegram. Her kanalda en düşük önem ve "çözüldü bildirimi" seçeneği vardır; **Test gönder** düğmesi vardır. Parola/secret/token alanları salt-yazılır: okunurken maskelenir, düzenlemede boş bırakılırsa eski değer korunur.
+- **Bakım pencereleri**: tek seferlik, günlük veya haftalık; hizmet/grup/etiket kapsamlı. Pencere sırasında alarm açılır ama bildirim gönderilmez, "bakımda" etiketi görünür.
+- **Üstlenme (ack)**: açık alarmda "Üstleniyorum" / geri al.
+- **Kural kapsamı**: kural tüm hizmetlere veya seçili hizmet / grup / etikete uygulanır.
+- **Grup ve etiket**: Assetler sayfasında düzenlenir, filtrelenir.
+- **Ortam değişkeni** `APM_PUBLIC_URL`: bildirimlerdeki bağlantının adresi (ör. `https://apm.sirket.local`).
+- **Veritabanı**: `013_notifications.sql` yalnızca yeni tablo/sütun ekler; mevcut veri değişmez, açılışta otomatik uygulanır.
+- MAPI Docker/Linux'ta çalışmaz (SMTP/Graph/EWS kullanın). EWS modern kimlik doğrulamayı (OAuth) desteklemez.
+- Kullanım kılavuzu: `KULLANIM-KILAVUZU.md`.

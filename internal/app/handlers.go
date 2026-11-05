@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"appmon/internal/probe"
 )
 
@@ -79,7 +81,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, a Auth) {
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a Auth) {
 	ctx := r.Context()
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, name, kind, language, collection, status, last_seen, labels FROM assets WHERE tenant_id = $1 ORDER BY name`, a.TenantID)
+		`SELECT id, name, kind, language, collection, status, last_seen, labels, grp, tags FROM assets WHERE tenant_id = $1 ORDER BY name`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -93,11 +95,16 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a Auth) {
 		var name, kind, lang, coll, status string
 		var seen sql.NullTime
 		var labels []byte
-		if err := rows.Scan(&id, &name, &kind, &lang, &coll, &status, &seen, &labels); err != nil {
+		var grp string
+		var tags []string
+		if err := rows.Scan(&id, &name, &kind, &lang, &coll, &status, &seen, &labels, &grp, pq.Array(&tags)); err != nil {
 			continue
 		}
+		if tags == nil {
+			tags = []string{}
+		}
 		it := item{"id": id, "name": name, "kind": kind, "language": lang, "collection": coll, "status": status,
-			"labels": json.RawMessage(labels), "latest": map[string]float64{}}
+			"labels": json.RawMessage(labels), "latest": map[string]float64{}, "group": grp, "tags": tags}
 		if seen.Valid {
 			it["last_seen"] = seen.Time
 		}
@@ -598,7 +605,7 @@ func (s *Server) deleteProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 
 func (s *Server) listRules(w http.ResponseWriter, r *http.Request, a Auth) {
 	rows, err := s.DB.QueryContext(r.Context(),
-		`SELECT id, name, metric, comparator, threshold, window_sec, severity, enabled FROM alert_rules WHERE tenant_id = $1 ORDER BY id`, a.TenantID)
+		`SELECT id, name, metric, comparator, threshold, window_sec, severity, enabled, asset_ids, group_name, tag FROM alert_rules WHERE tenant_id = $1 ORDER BY id`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -611,9 +618,14 @@ func (s *Server) listRules(w http.ResponseWriter, r *http.Request, a Auth) {
 		var thr float64
 		var win int
 		var enabled bool
-		if rows.Scan(&id, &name, &metric, &cmp, &thr, &win, &sev, &enabled) == nil {
+		var ids []int64
+		var grp, tag string
+		if rows.Scan(&id, &name, &metric, &cmp, &thr, &win, &sev, &enabled, pq.Array(&ids), &grp, &tag) == nil {
+			if ids == nil {
+				ids = []int64{}
+			}
 			list = append(list, map[string]any{"id": id, "name": name, "metric": metric, "comparator": cmp,
-				"threshold": thr, "window_sec": win, "severity": sev, "enabled": enabled})
+				"threshold": thr, "window_sec": win, "severity": sev, "enabled": enabled, "asset_ids": ids, "group": grp, "tag": tag})
 		}
 	}
 	writeJSON(w, 200, list)
@@ -627,8 +639,18 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request, a Auth) {
 		Threshold  float64 `json:"threshold"`
 		WindowSec  int     `json:"window_sec"`
 		Severity   string  `json:"severity"`
+		AssetIDs   []int64 `json:"asset_ids"`
+		Group      string  `json:"group"`
+		Tag        string  `json:"tag"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if req.AssetIDs == nil {
+		req.AssetIDs = []int64{}
+	}
+	if len(req.Group) > 60 || len(req.Tag) > 40 {
+		fail(w, 400, "grup ve etiket çok uzun")
 		return
 	}
 	if req.WindowSec == 0 {
@@ -645,8 +667,8 @@ func (s *Server) createRule(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	var id int64
 	if err := s.DB.QueryRowContext(r.Context(),
-		`INSERT INTO alert_rules (tenant_id, name, metric, comparator, threshold, window_sec, severity) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		a.TenantID, req.Name, req.Metric, req.Comparator, req.Threshold, req.WindowSec, req.Severity).Scan(&id); err != nil {
+		`INSERT INTO alert_rules (tenant_id, name, metric, comparator, threshold, window_sec, severity, asset_ids, group_name, tag) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		a.TenantID, req.Name, req.Metric, req.Comparator, req.Threshold, req.WindowSec, req.Severity, pq.Array(req.AssetIDs), req.Group, req.Tag).Scan(&id); err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
 	}
@@ -670,8 +692,18 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request, a Auth) {
 		WindowSec  int     `json:"window_sec"`
 		Severity   string  `json:"severity"`
 		Enabled    *bool   `json:"enabled"`
+		AssetIDs   []int64 `json:"asset_ids"`
+		Group      string  `json:"group"`
+		Tag        string  `json:"tag"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if req.AssetIDs == nil {
+		req.AssetIDs = []int64{}
+	}
+	if len(req.Group) > 60 || len(req.Tag) > 40 {
+		fail(w, 400, "grup ve etiket çok uzun")
 		return
 	}
 	req.Name, req.Metric = strings.TrimSpace(req.Name), strings.TrimSpace(req.Metric)
@@ -691,8 +723,8 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(r.Context(),
-		`UPDATE alert_rules SET name=$1, metric=$2, comparator=$3, threshold=$4, window_sec=$5, severity=$6, enabled=$7 WHERE id=$8 AND tenant_id=$9`,
-		req.Name, req.Metric, req.Comparator, req.Threshold, req.WindowSec, req.Severity, enabled, id, a.TenantID)
+		`UPDATE alert_rules SET name=$1, metric=$2, comparator=$3, threshold=$4, window_sec=$5, severity=$6, enabled=$7, asset_ids=$8, group_name=$9, tag=$10 WHERE id=$11 AND tenant_id=$12`,
+		req.Name, req.Metric, req.Comparator, req.Threshold, req.WindowSec, req.Severity, enabled, pq.Array(req.AssetIDs), req.Group, req.Tag, id, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -738,7 +770,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request, a Auth) {
 		state = "open"
 	}
 	rows, err := s.DB.QueryContext(r.Context(),
-		`SELECT al.id, r.name, r.severity, a.name, r.metric, r.comparator, r.threshold, al.value, al.opened_at, al.resolved_at
+		`SELECT al.id, r.name, r.severity, a.name, r.metric, r.comparator, r.threshold, al.value, al.opened_at, al.resolved_at, al.ack_by, al.ack_at, al.ack_note, al.silenced, a.id
 		 FROM alerts al JOIN alert_rules r ON r.id = al.rule_id JOIN assets a ON a.id = al.asset_id
 		 WHERE al.tenant_id = $1 AND al.state = $2 ORDER BY al.opened_at DESC LIMIT 200`, a.TenantID, state)
 	if err != nil {
@@ -752,12 +784,18 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request, a Auth) {
 		var rule, sev, asset, metric, cmp string
 		var thr, val float64
 		var opened time.Time
-		var resolved sql.NullTime
-		if rows.Scan(&id, &rule, &sev, &asset, &metric, &cmp, &thr, &val, &opened, &resolved) != nil {
+		var resolved, ackAt sql.NullTime
+		var ackBy, ackNote string
+		var silenced bool
+		var assetID int64
+		if rows.Scan(&id, &rule, &sev, &asset, &metric, &cmp, &thr, &val, &opened, &resolved, &ackBy, &ackAt, &ackNote, &silenced, &assetID) != nil {
 			continue
 		}
-		it := map[string]any{"id": id, "rule": rule, "severity": sev, "asset": asset, "metric": metric,
-			"comparator": cmp, "threshold": thr, "value": val, "opened_at": opened}
+		it := map[string]any{"id": id, "rule": rule, "severity": sev, "asset": asset, "asset_id": assetID, "metric": metric,
+			"comparator": cmp, "threshold": thr, "value": val, "opened_at": opened, "silenced": silenced}
+		if ackAt.Valid {
+			it["ack_by"], it["ack_at"], it["ack_note"] = ackBy, ackAt.Time, ackNote
+		}
 		if resolved.Valid {
 			it["resolved_at"] = resolved.Time
 		}

@@ -185,3 +185,6 @@ func RunX(ctx context.Context, spec Spec, blockPrivate bool) Result {
 	}
 	return Result{Up: err == nil, Latency: time.Since(start), Err: err, Extra: extra}
 }
+
+// Guard dışarıdan (bildirim gibi) dial denetimi için guard'ı açar.
+func Guard(block bool) func(network, address string, c syscall.RawConn) error { return guard(block) }

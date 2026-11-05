@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,7 +60,7 @@ func main() {
 		log.Fatalf("migration: %v", err)
 	}
 
-	srv := &app.Server{DB: database, Mode: mode, BlockPrivate: block, RetentionDays: retention, Static: web.Static()}
+	srv := &app.Server{DB: database, Mode: mode, BlockPrivate: block, RetentionDays: retention, Static: web.Static(), PublicURL: strings.TrimRight(os.Getenv("APM_PUBLIC_URL"), "/")}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

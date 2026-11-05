@@ -24,6 +24,7 @@ type Server struct {
 	BlockPrivate  bool   // probe'ların özel ağlara erişimini engeller (SaaS'ta açık)
 	RetentionDays int
 	Static        fs.FS
+	PublicURL     string // bildirimlerdeki bağlantı için dış adres (APM_PUBLIC_URL), boş olabilir
 
 	Browser        *browser.Manager // gömülü tarayıcı kaydı (nil ise özellik kapalı)
 	BrowserOptions cdp.Options
@@ -182,6 +183,17 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/alert-rules/{id}", s.guard("write", s.updateRule))
 	mux.HandleFunc("DELETE /api/alert-rules/{id}", s.guard("write", s.deleteRule))
 	mux.HandleFunc("GET /api/alerts", s.guard("read", s.listAlerts))
+	mux.HandleFunc("POST /api/alerts/{id}/ack", s.guard("write", s.ackAlert))
+	mux.HandleFunc("DELETE /api/alerts/{id}/ack", s.guard("write", s.unackAlert))
+	mux.HandleFunc("PUT /api/assets/{id}/meta", s.guard("write", s.putAssetMeta))
+	mux.HandleFunc("GET /api/maintenance", s.guard("read", s.listMaintenance))
+	mux.HandleFunc("POST /api/maintenance", s.guard("write", s.createMaintenance))
+	mux.HandleFunc("DELETE /api/maintenance/{id}", s.guard("write", s.deleteMaintenance))
+	mux.HandleFunc("GET /api/notification-channels", s.guard("admin", s.listChannels))
+	mux.HandleFunc("POST /api/notification-channels", s.guard("admin", s.createChannel))
+	mux.HandleFunc("PUT /api/notification-channels/{id}", s.guard("admin", s.updateChannel))
+	mux.HandleFunc("DELETE /api/notification-channels/{id}", s.guard("admin", s.deleteChannel))
+	mux.HandleFunc("POST /api/notification-channels/{id}/test", s.guard("admin", s.testChannel))
 	mux.HandleFunc("GET /api/license", s.guard("read", s.getLicense))
 	mux.HandleFunc("PUT /api/license", s.guard("admin", s.putLicense))
 	mux.HandleFunc("GET /api/keys", s.guard("admin", s.listKeys))
