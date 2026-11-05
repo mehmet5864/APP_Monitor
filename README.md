@@ -252,3 +252,23 @@ Senaryolar listesinde **Düzenle**: ad, aralık, zaman aşımı, etkin/TLS ayarl
 - **Uygulama haritası**: bir uygulama seçilince yanında "Topolojide göster" ve "Kontrol edilen sayfalara ekle" düğmeleri çıkar (tarayıcı senaryosu yoksa Senaryolar sayfasına yönlendirir; zaten ekliyse "Kontrol edilen sayfalarda ✓" görünür).
 - **Uygulama haritası (Genel bakış)**: varsayılan olarak yalnızca web uygulamaları (web sitesi/servisi) görünür; birine tıklayınca ona bağlı bileşenler açılır, "Yalnızca web uygulamaları" ile kapanır. Topoloji sekmesi tüm bileşenleri gösterir.
 - **Yönlendirmeler ve sertifikalar**: kaydedici/yeniden oynatma tarayıcısı HTTP 302, meta ve JS yönlendirmelerini ve başka alan adlarına geçişi izler; kurum içi (self-signed/özel CA) https sertifika hatalarını yok sayar. Sıkı doğrulama için `APM_BROWSER_STRICT_TLS=true`.
+
+## yama25 — Apache arkasında, internetsiz tek komut kurulum
+- `deploy/apache/kur-apache.sh` + `README-KURULUM.txt`: Apache (apache2/httpd) ters vekil + systemd + PostgreSQL kurulumu, internetsiz. Paket: `appmon-apache.tar.gz` (ikili dosyalar + betik). Kullanım: `sudo ./kur-apache.sh`.
+- Arayüz artık Google Fonts yüklemez (kapalı ağda gecikme olmasın); sistem yazı tipleri kullanılır, CSP dış kaynağa izin vermez.
+
+## yama26 — Yetki rolleri
+
+| Rol | Yetki |
+|---|---|
+| admin (Yönetici) | Her şey: lisans, API anahtarları, denetim, yapılandırma |
+| operator (İşletmeci) | Asset/probe/senaryo/alarm kuralı ekleme-değiştirme-silme; anahtar, lisans, denetim yok |
+| viewer (İzleyici) | Salt okunur; yazma düğmeleri kilitli, sunucu 403 döner |
+| agent (Ajan) | Yalnızca veri gönderimi (ingest) |
+
+Rol, API anahtarı oluştururken seçilir (Lisans ve anahtarlar). Üst bar'da rol rozeti görünür; yetkisiz sayfalar menüden gizlenir. Sunucu tarafı denetimi esastır, arayüz kilidi yalnızca kolaylıktır.
+
+### Mevcut kurulumu güncelleme (veri korunur)
+Migration `011_roles.sql` açılışta otomatik uygulanır; yalnızca `api_keys.role` kısıtını genişletir, veri silmez. Mevcut anahtarlar (admin/agent) aynen çalışır.
+1. Önerilen yedek: `sudo -u postgres pg_dump appmon > appmon-yedek.sql` (gömülü PG ise paketteki pg_dump ile, port 5433).
+2. Yeni paketi aç, `sudo ./kur-apache.sh` çalıştır — `/etc/appmon/appmon.env`, veritabanı ve anahtar korunur; sadece ikili dosya değişir.

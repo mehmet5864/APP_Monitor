@@ -138,6 +138,37 @@
     ['alarmlar', 'Alarmlar'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'],
   ];
 
+  // ---- Yetki rolleri ----
+  const ROLE_LABEL = { admin: 'Yönetici', operator: 'İşletmeci', viewer: 'İzleyici', agent: 'Agent' };
+  const ADMIN_ONLY = ['lisans', 'denetim'];
+  let ME = { label: '', role: 'admin' };
+  const canWrite = () => ME.role === 'admin' || ME.role === 'operator';
+  async function loadMe() {
+    try { ME = await api('/api/me'); } catch (e) { ME = { label: '', role: 'viewer' }; }
+    document.body.dataset.role = ME.role;
+    const b = $('#role-badge');
+    b.textContent = (ROLE_LABEL[ME.role] || ME.role) + (ME.label ? ' · ' + ME.label : '');
+    b.title = 'Oturum açan anahtar: ' + (ME.label || '-') + ' — rol: ' + (ROLE_LABEL[ME.role] || ME.role);
+    b.hidden = false;
+  }
+  // İzleyici rolünde değiştirme düğmelerini devre dışı bırakır (asıl denetim sunucudadır: 403).
+  const KEEP_SEL = '#login, .top-right, #findbar, .filters, #report-modal, .report-cards, .seg, .ctx-menu, .lightbox, .keep';
+  const WRITE_TXT = /^(Sil|Ekle|Kaydet|Değiştir|Düzenle|Oluştur|Güncelle|Çalıştır|Şimdi|Kaydı başlat|Kaydı bitir|Bağlantı ekle|Probe ekle|Kural ekle|Anahtar oluştur|Senaryoyu kaydet|Giriş|Girişi|Bilgileri|Adımı|\+ Adım|Gruptaki|Kaydet ve|Yerleşimi sıfırla)/;
+  function lockCtl(b) { b.disabled = true; b.classList.add('locked'); b.title = 'Bu işlem için yetkiniz yok (izleyici rolü yalnızca görüntüleyebilir).'; }
+  function enforceRole(root) {
+    if (ME.role !== 'viewer') return;
+    for (const b of root.querySelectorAll('button')) {
+      if (b.classList.contains('locked') || b.closest(KEEP_SEL)) continue;
+      const tx = b.textContent.trim();
+      if (b.matches('.primary, .danger, [type=submit]') || WRITE_TXT.test(tx) || (b.closest('td') && /^(Kapat|Aç)$/.test(tx))) lockCtl(b);
+    }
+  }
+  let enfQueued = false;
+  new MutationObserver(() => {
+    if (ME.role !== 'viewer' || enfQueued) return;
+    enfQueued = true; requestAnimationFrame(() => { enfQueued = false; enforceRole($('#view')); });
+  }).observe($('#view'), { childList: true, subtree: true });
+
   async function refreshHeader() {
     try {
       const o = await api('/api/overview');
@@ -154,7 +185,7 @@
 
   function buildNav() {
     const nav = $('#nav');
-    nav.replaceChildren(...VIEWS.map(([id, text]) => h('a', { href: '#' + id, 'data-v': id }, text)));
+    nav.replaceChildren(...VIEWS.filter(([id]) => ME.role === 'admin' || !ADMIN_ONLY.includes(id)).map(([id, text]) => h('a', { href: '#' + id, 'data-v': id }, text)));
   }
 
   // ---- Görünümler ----
@@ -1413,7 +1444,7 @@
     const keyOut = h('div', { hidden: true });
     const kf = h('form', { class: 'inline' },
       field('Anahtar etiketi', h('input', { id: 'k-label', required: true, maxlength: '100', placeholder: 'ör. web-sunucu-01 agent' })),
-      field('Rol', select('k-role', [['agent', 'Agent (yalnızca veri gönderir)'], ['admin', 'Yönetici']])),
+      field('Rol', select('k-role', [['viewer', 'İzleyici (yalnızca görüntüler)'], ['operator', 'İşletmeci (izleme ayarlarını değiştirir)'], ['admin', 'Yönetici (her şey)'], ['agent', 'Agent (yalnızca veri gönderir)']])),
       h('button', { type: 'submit', class: 'primary' }, 'Anahtar oluştur'));
     kf.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1429,7 +1460,7 @@
       } catch (err) { keyOut.hidden = false; keyOut.replaceChildren(h('p', { class: 'error' }, err.message)); }
     });
     const krows = keys.map((k) => h('tr', null, h('td', null, h('b', null, k.label)),
-      h('td', null, k.role === 'admin' ? 'Yönetici' : 'Agent'), h('td', { class: 'mono small' }, ago(k.created_at)),
+      h('td', null, ROLE_LABEL[k.role] || k.role), h('td', { class: 'mono small' }, ago(k.created_at)),
       h('td', null, h('button', { type: 'button', class: 'danger', onclick: async () => {
         if (!window.confirm(`"${k.label}" anahtarı silinsin mi? Bu anahtarı kullanan agent'lar veri gönderemez.`)) return;
         try { await api('/api/keys/' + k.id, { method: 'DELETE' }); render(); } catch (e) { alert(e.message); }
@@ -1505,7 +1536,7 @@
           fact('Veri saklama süresi', info.retention_days + ' gün'),
           fact('Probe\'lar için özel ağ engeli', info.block_private ? 'Açık' : 'Kapalı'),
           fact('Tarayıcı kaydı ve senaryoları', info.browser_enabled ? 'Açık' : 'Kapalı'),
-          fact('Oturum', info.user + ' (' + info.role + ')'))),
+          fact('Oturum', info.user + ' (' + (ROLE_LABEL[info.role] || info.role) + ')'))),
         h('section', null, h('h3', null, 'Gizli değer kasası (Vault)'), h('div', { class: 'panel' },
           h('p', null, pill('unknown', 'Yapılandırılmadı')),
           h('p', { class: 'muted' }, 'Henüz bir kasa bağlı değil. Şu an parolalar ve token\'lar (probe/senaryo başlıkları, giriş bilgileri) veritabanında düz metin saklanıyor. Kasa entegrasyonu eklenene kadar yetkisi sınırlı test kullanıcıları kullanın.'))),
@@ -1923,6 +1954,7 @@
       else a.removeAttribute('aria-current');
     }
     try {
+      if (ADMIN_ONLY.includes(v) && ME.role !== 'admin') { $('#view').replaceChildren(h('p', { class: 'error' }, 'Bu sayfa için yönetici yetkisi gerekir (rolünüz: ' + (ROLE_LABEL[ME.role] || ME.role) + ').')); return; }
       const node = await RENDER[v]();
       if (v === current()) $('#view').replaceChildren(node);
     } catch (e) {
@@ -1931,13 +1963,15 @@
   }
 
   // ---- Oturum ----
-  function showApp() {
+  async function showApp() {
     $('#login').hidden = true; $('#app').hidden = false;
+    await loadMe();
     buildNav(); render(); refreshBell();
   }
   function logout() {
     key = '';
     try { localStorage.removeItem('apm_key'); } catch (e) { /* yoksay */ }
+    ME = { label: '', role: 'admin' }; document.body.removeAttribute('data-role'); $('#role-badge').hidden = true;
     $('#app').hidden = true; $('#login').hidden = false;
   }
 

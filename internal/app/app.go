@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -66,20 +67,59 @@ func (s *Server) authenticate(r *http.Request) (Auth, bool) {
 	return a, err == nil
 }
 
-// guard kimlik doğrular. role "admin" ise yalnızca yönetici anahtarları, "ingest" ise yönetici ve agent anahtarları geçer.
-func (s *Server) guard(role string, h handler) http.HandlerFunc {
+// Rol seviyeleri. admin: her şey; operator: izleme verilerini değiştirir (asset, probe, senaryo, topoloji, kural);
+// viewer: yalnızca okur; agent: yalnızca veri gönderir.
+var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3}
+
+// RoleLabel arayüz ve hata iletileri için Türkçe rol adı.
+func RoleLabel(r string) string {
+	switch r {
+	case "admin":
+		return "yönetici"
+	case "operator":
+		return "işletmeci"
+	case "viewer":
+		return "izleyici"
+	case "agent":
+		return "agent"
+	}
+	return r
+}
+
+// allowed rolün istenen seviyeye izni olup olmadığını döndürür.
+// level: "any" (geçerli her anahtar), "ingest" (admin ve agent), "read" (izleyici ve üstü),
+// "write" (işletmeci ve üstü), "admin" (yalnızca yönetici).
+func allowed(level, role string) bool {
+	switch level {
+	case "any":
+		return true
+	case "ingest":
+		return role == "admin" || role == "agent"
+	case "read":
+		return roleRank[role] >= roleRank["viewer"]
+	case "write":
+		return roleRank[role] >= roleRank["operator"]
+	case "admin":
+		return role == "admin"
+	}
+	return false
+}
+
+// guard kimlik doğrular ve rol seviyesini denetler (allowed).
+func (s *Server) guard(level string, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := s.authenticate(r)
 		if !ok {
 			fail(w, http.StatusUnauthorized, "geçersiz veya eksik API anahtarı")
 			return
 		}
-		if role == "admin" && a.Role != "admin" {
-			fail(w, http.StatusForbidden, "bu işlem için yönetici yetkisi gerekir")
+		if !allowed(level, a.Role) {
+			need := map[string]string{"read": "izleyici", "write": "işletmeci", "admin": "yönetici", "ingest": "agent"}[level]
+			fail(w, http.StatusForbidden, fmt.Sprintf("bu işlem için %s yetkisi gerekir (rolünüz: %s)", need, RoleLabel(a.Role)))
 			return
 		}
 		maxBody := int64(1 << 20)
-		if role == "ingest" {
+		if level == "ingest" {
 			maxBody = 8 << 20
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -102,46 +142,47 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/metrics", s.guard("ingest", s.otlpMetrics)) // OTLP/HTTP (JSON) - agent'sız .NET/Java/Python/Go
 
 	// Yönetim uçları
-	mux.HandleFunc("GET /api/overview", s.guard("admin", s.overview))
-	mux.HandleFunc("GET /api/assets", s.guard("admin", s.listAssets))
-	mux.HandleFunc("POST /api/assets", s.guard("admin", s.createAsset))
-	mux.HandleFunc("DELETE /api/assets/{id}", s.guard("admin", s.deleteAsset))
-	mux.HandleFunc("PATCH /api/assets/{id}", s.guard("admin", s.patchAsset))
-	mux.HandleFunc("GET /api/dashboard", s.guard("admin", s.dashboard))
-	mux.HandleFunc("GET /api/settings", s.guard("admin", s.settingsInfo))
-	mux.HandleFunc("GET /api/assets/{id}/metrics", s.guard("admin", s.assetMetrics))
-	mux.HandleFunc("GET /api/assets/{id}/impact", s.guard("admin", s.assetImpact))
-	mux.HandleFunc("GET /api/topology", s.guard("admin", s.getTopology))
-	mux.HandleFunc("GET /api/topology/stats", s.guard("admin", s.topologyStats))
-	mux.HandleFunc("POST /api/topology/edges", s.guard("admin", s.createEdge))
-	mux.HandleFunc("PUT /api/topology/edges/{id}", s.guard("admin", s.updateEdge))
-	mux.HandleFunc("DELETE /api/topology/edges/{id}", s.guard("admin", s.deleteEdge))
-	mux.HandleFunc("GET /api/probes", s.guard("admin", s.listProbes))
-	mux.HandleFunc("POST /api/probes", s.guard("admin", s.createProbe))
-	mux.HandleFunc("PUT /api/probes/{id}", s.guard("admin", s.updateProbe))
-	mux.HandleFunc("DELETE /api/probes/{id}", s.guard("admin", s.deleteProbe))
-	mux.HandleFunc("GET /api/scenarios", s.guard("admin", s.listScenarios))
-	mux.HandleFunc("POST /api/scenarios", s.guard("admin", s.createScenario))
-	mux.HandleFunc("POST /api/scenarios/test", s.guard("admin", s.testScenario))
-	mux.HandleFunc("PUT /api/scenarios/{id}", s.guard("admin", s.updateScenario))
-	mux.HandleFunc("DELETE /api/scenarios/{id}", s.guard("admin", s.deleteScenario))
-	mux.HandleFunc("POST /api/scenarios/{id}/run", s.guard("admin", s.runScenarioNow))
-	mux.HandleFunc("POST /api/scenarios/{id}/retry-login", s.guard("admin", s.retryLogin))
-	mux.HandleFunc("POST /api/scenarios/{id}/ack-changes", s.guard("admin", s.ackScenarioChanges))
-	mux.HandleFunc("GET /api/scenarios/{id}/runs", s.guard("admin", s.listScenarioRuns))
-	mux.HandleFunc("POST /api/recorder", s.guard("admin", s.recorderStart))
-	mux.HandleFunc("POST /api/recorder/analyze-login", s.guard("admin", s.analyzeLogin))
-	mux.HandleFunc("GET /api/recorder/{id}", s.guard("admin", s.recorderState))
-	mux.HandleFunc("GET /api/recorder/{id}/frame", s.guard("admin", s.recorderFrame))
-	mux.HandleFunc("POST /api/recorder/{id}/input", s.guard("admin", s.recorderInput))
-	mux.HandleFunc("POST /api/recorder/{id}/stop", s.guard("admin", s.recorderStop))
-	mux.HandleFunc("GET /api/scenarios/{id}/runs/{run}/shots/{n}", s.guard("admin", s.scenarioShot))
-	mux.HandleFunc("GET /api/alert-rules", s.guard("admin", s.listRules))
-	mux.HandleFunc("POST /api/alert-rules", s.guard("admin", s.createRule))
-	mux.HandleFunc("PUT /api/alert-rules/{id}", s.guard("admin", s.updateRule))
-	mux.HandleFunc("DELETE /api/alert-rules/{id}", s.guard("admin", s.deleteRule))
-	mux.HandleFunc("GET /api/alerts", s.guard("admin", s.listAlerts))
-	mux.HandleFunc("GET /api/license", s.guard("admin", s.getLicense))
+	mux.HandleFunc("GET /api/me", s.guard("any", s.me))
+	mux.HandleFunc("GET /api/overview", s.guard("read", s.overview))
+	mux.HandleFunc("GET /api/assets", s.guard("read", s.listAssets))
+	mux.HandleFunc("POST /api/assets", s.guard("write", s.createAsset))
+	mux.HandleFunc("DELETE /api/assets/{id}", s.guard("write", s.deleteAsset))
+	mux.HandleFunc("PATCH /api/assets/{id}", s.guard("write", s.patchAsset))
+	mux.HandleFunc("GET /api/dashboard", s.guard("read", s.dashboard))
+	mux.HandleFunc("GET /api/settings", s.guard("read", s.settingsInfo))
+	mux.HandleFunc("GET /api/assets/{id}/metrics", s.guard("read", s.assetMetrics))
+	mux.HandleFunc("GET /api/assets/{id}/impact", s.guard("read", s.assetImpact))
+	mux.HandleFunc("GET /api/topology", s.guard("read", s.getTopology))
+	mux.HandleFunc("GET /api/topology/stats", s.guard("read", s.topologyStats))
+	mux.HandleFunc("POST /api/topology/edges", s.guard("write", s.createEdge))
+	mux.HandleFunc("PUT /api/topology/edges/{id}", s.guard("write", s.updateEdge))
+	mux.HandleFunc("DELETE /api/topology/edges/{id}", s.guard("write", s.deleteEdge))
+	mux.HandleFunc("GET /api/probes", s.guard("read", s.listProbes))
+	mux.HandleFunc("POST /api/probes", s.guard("write", s.createProbe))
+	mux.HandleFunc("PUT /api/probes/{id}", s.guard("write", s.updateProbe))
+	mux.HandleFunc("DELETE /api/probes/{id}", s.guard("write", s.deleteProbe))
+	mux.HandleFunc("GET /api/scenarios", s.guard("read", s.listScenarios))
+	mux.HandleFunc("POST /api/scenarios", s.guard("write", s.createScenario))
+	mux.HandleFunc("POST /api/scenarios/test", s.guard("write", s.testScenario))
+	mux.HandleFunc("PUT /api/scenarios/{id}", s.guard("write", s.updateScenario))
+	mux.HandleFunc("DELETE /api/scenarios/{id}", s.guard("write", s.deleteScenario))
+	mux.HandleFunc("POST /api/scenarios/{id}/run", s.guard("write", s.runScenarioNow))
+	mux.HandleFunc("POST /api/scenarios/{id}/retry-login", s.guard("write", s.retryLogin))
+	mux.HandleFunc("POST /api/scenarios/{id}/ack-changes", s.guard("write", s.ackScenarioChanges))
+	mux.HandleFunc("GET /api/scenarios/{id}/runs", s.guard("read", s.listScenarioRuns))
+	mux.HandleFunc("POST /api/recorder", s.guard("write", s.recorderStart))
+	mux.HandleFunc("POST /api/recorder/analyze-login", s.guard("write", s.analyzeLogin))
+	mux.HandleFunc("GET /api/recorder/{id}", s.guard("write", s.recorderState))
+	mux.HandleFunc("GET /api/recorder/{id}/frame", s.guard("write", s.recorderFrame))
+	mux.HandleFunc("POST /api/recorder/{id}/input", s.guard("write", s.recorderInput))
+	mux.HandleFunc("POST /api/recorder/{id}/stop", s.guard("write", s.recorderStop))
+	mux.HandleFunc("GET /api/scenarios/{id}/runs/{run}/shots/{n}", s.guard("read", s.scenarioShot))
+	mux.HandleFunc("GET /api/alert-rules", s.guard("read", s.listRules))
+	mux.HandleFunc("POST /api/alert-rules", s.guard("write", s.createRule))
+	mux.HandleFunc("PUT /api/alert-rules/{id}", s.guard("write", s.updateRule))
+	mux.HandleFunc("DELETE /api/alert-rules/{id}", s.guard("write", s.deleteRule))
+	mux.HandleFunc("GET /api/alerts", s.guard("read", s.listAlerts))
+	mux.HandleFunc("GET /api/license", s.guard("read", s.getLicense))
 	mux.HandleFunc("PUT /api/license", s.guard("admin", s.putLicense))
 	mux.HandleFunc("GET /api/keys", s.guard("admin", s.listKeys))
 	mux.HandleFunc("POST /api/keys", s.guard("admin", s.createKey))
@@ -159,7 +200,7 @@ func secure(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+			"default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

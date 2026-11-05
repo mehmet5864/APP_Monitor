@@ -1,0 +1,17 @@
+INTERNETSIZ KURULUM ICIN PAKETLER (isteğe bağlı)
+================================================
+Hedef sunucuda PostgreSQL zaten kuruluysa (veya --db-dsn ile başka bir PostgreSQL verecekseniz)
+bu klasöre hiçbir şey koymanız gerekmez.
+
+KOLAY YOL (RHEL / Rocky / AlmaLinux): internetli bir makinede (Docker kurulu)
+    ./paket-indir-rhel.sh 9            (hedef sunucu 9 ise; 8 ise 8)
+    ./paket-indir-rhel.sh 9 --ssl      (Apache'de HTTPS de kullanacaksaniz)
+  Bu betik paketler/ klasorune sunlari indirir (hedefte eksik olanlarla birlikte):
+    PostgreSQL sunucusu, Google Chrome + kutuphaneleri, yazi tipleri, curl/openssl/SELinux araclari, (--ssl: mod_ssl).
+  Ardindan TUM appmon-apache klasorunu hedefe tasiyin; kur-apache.sh paketleri tek seferde kurar.
+  Istemediginiz parcalari --no-chrome / --no-pg ile cikarabilirsiniz.
+
+ELLE (Debian / Ubuntu):
+    mkdir -p paketler && cd paketler && apt-get update
+    apt-get install --download-only -y -o Dir::Cache::archives="$PWD" postgresql fontconfig fonts-dejavu-core curl openssl
+    Google Chrome .deb dosyasini da buraya koyun; yalnizca *.deb kalsin.

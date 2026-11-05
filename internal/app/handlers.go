@@ -798,8 +798,8 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request, a Auth) {
 	if req.Role == "" {
 		req.Role = "agent"
 	}
-	if req.Label == "" || len(req.Label) > 100 || !oneOf(req.Role, "admin", "agent") {
-		fail(w, 400, "label zorunlu, role admin veya agent olmalı")
+	if req.Label == "" || len(req.Label) > 100 || !oneOf(req.Role, "admin", "operator", "viewer", "agent") {
+		fail(w, 400, "label zorunlu; rol admin, operator, viewer veya agent olmalı")
 		return
 	}
 	key := NewKey()
@@ -984,4 +984,9 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	s.audit(r.Context(), a.TenantID, a.Label, "probe.update", typ+" "+maskTarget(typ, target))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// me oturum açan anahtarın adını ve rolünü döndürür (arayüz yetkiye göre şekillenir).
+func (s *Server) me(w http.ResponseWriter, r *http.Request, a Auth) {
+	writeJSON(w, 200, map[string]any{"label": a.Label, "role": a.Role, "role_label": RoleLabel(a.Role)})
 }
