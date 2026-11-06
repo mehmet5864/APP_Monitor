@@ -183,7 +183,7 @@ func RunX(ctx context.Context, spec Spec, blockPrivate bool) Result {
 	default:
 		err = fmt.Errorf("bilinmeyen probe türü: %s", spec.Type)
 	}
-	return Result{Up: err == nil, Latency: time.Since(start), Err: err, Extra: extra}
+	return Result{Up: err == nil, Latency: time.Since(start), Err: tlsHint(err), Extra: extra}
 }
 
 // Guard dışarıdan (bildirim gibi) dial denetimi için guard'ı açar.

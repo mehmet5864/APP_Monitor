@@ -2,7 +2,10 @@
 package main
 
 import (
+	"appmon/internal/probe"
+	"appmon/internal/update"
 	"context"
+	"crypto/ed25519"
 	"log"
 	"net/http"
 	"os"
@@ -60,7 +63,25 @@ func main() {
 		log.Fatalf("migration: %v", err)
 	}
 
-	srv := &app.Server{DB: database, Mode: mode, BlockPrivate: block, RetentionDays: retention, Static: web.Static(), PublicURL: strings.TrimRight(os.Getenv("APM_PUBLIC_URL"), "/")}
+	if ca := os.Getenv("APM_CA_FILE"); ca != "" {
+		if n, err := probe.LoadCAFile(ca); err != nil {
+			log.Printf("uyarı: APM_CA_FILE (%s) yüklenemedi: %v", ca, err)
+		} else {
+			log.Printf("kurum CA dosyası yüklendi: %s (%d sertifika yetkisi eklendi)", ca, n)
+		}
+	}
+	var updPub ed25519.PublicKey
+	updBad := false
+	if f := os.Getenv("APM_UPDATE_PUBKEY"); f != "" {
+		if k, err := update.LoadPublicKey(f); err != nil {
+			log.Printf("uyarı: APM_UPDATE_PUBKEY (%s) okunamadı: %v — arayüzden güncelleme kapalı", f, err)
+			updBad = true
+		} else {
+			updPub = k
+			log.Printf("güncelleme paketleri için imza doğrulaması açık (%s)", f)
+		}
+	}
+	srv := &app.Server{UpdateDir: os.Getenv("APM_UPDATE_DIR"), UpdatePub: updPub, UpdatePubBad: updBad, DB: database, Mode: mode, BlockPrivate: block, RetentionDays: retention, Static: web.Static(), PublicURL: strings.TrimRight(os.Getenv("APM_PUBLIC_URL"), "/")}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

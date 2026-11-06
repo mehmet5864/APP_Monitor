@@ -109,7 +109,7 @@ func NewClient(timeout time.Duration, blockPrivate, skipTLSVerify, follow bool, 
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: timeout,
 		// Kullanıcı, kendi iç ağındaki kendinden imzalı sertifikalar için bunu probe başına bilinçli olarak açabilir.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify}, //nolint:gosec
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: skipTLSVerify, RootCAs: ExtraRoots}, //nolint:gosec
 	}
 	return &http.Client{
 		Timeout:   timeout,

@@ -310,3 +310,16 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 - **Kısmen erişilemiyor (degraded)**: bir asset'in tüm probe ve senaryolarının son sonucuna bakılır; hepsi başarılı = up, hepsi başarısız = down, karışık = degraded (sarı). Hazır kurallar: "Servis erişilemiyor" (`asset.down > 0`, kritik) ve yeni "Servis kısmen erişilemiyor" (`asset.degraded > 0`, uyarı). Migration `015_degraded.sql`: durum kısıtını genişletir, `probes.last_ok` ekler, değiştirilmemiş hazır kuralı günceller ve uyarı kuralını ekler; veri silinmez.
 - **Sürüm**: `internal/version` (varsayılan v1.0.0, `-ldflags "-X appmon/internal/version.Version=..."` ile değişir). Üst çubukta, Ayarlar > Sistem'de ve `/healthz` yanıtında görünür.
 - **Çevrimdışı (RHEL) güncelleme paketi**: `./paketle-guncelleme.sh [sürüm]` → `dist/appmon-guncelleme-<sürüm>.tar.gz` (sunucu+agent ikilileri, `guncelle-apache.sh`, SHA256SUMS, kılavuz). Sunucuda `sudo ./guncelle-apache.sh`: yedek → yükle → yeniden başlat → sağlık kontrolü → başarısızsa otomatik geri dönüş. Ayrıntı: `deploy/apache/OKU-GUNCELLEME.txt`.
+
+## yama32 — Kurum içi CA desteği (v1.0.1)
+
+- `APM_CA_FILE`: PEM dosyasındaki ek sertifika yetkileri sistem havuzuna eklenir; http/tls probe'ları ve senaryolar bu CA ile imzalı https sitelerine güvenir. Docker'da `./certs/ca.pem` (compose ile `/certs` olarak bağlanır). Dosya yoksa yalnızca uyarı yazılır.
+- "unknown authority / x509" hatalarına çözüm ipucu eklendi (CA'yı tanıtın veya probe'ta doğrulamayı kapatın).
+
+## yama33 — Arayüzden güncelleme (v1.0.2)
+
+- **Güncelleme** sayfası (admin): paket (.tar.gz) yüklenir → sunucu doğrular (`internal/update`: güvenli açma, manifest + SHA256, ELF, mimari, sürüm geri gitmeme, isteğe bağlı Ed25519 imza) ve `APM_UPDATE_DIR/staged-<id>` altına hazırlar → "Uygula" `apply.json` bırakır.
+- **Uygulayıcı**: root yetkili systemd hizmeti (`appmon-update.path` → `appmon-update.service` → `/usr/local/sbin/appmon-guncelle --uygula-istegi`, `guncelle-apache.sh`'in kurulu kopyası): sağlama/imza yeniden doğrulama → DB yedeği → ikili değiştirme → yeniden başlatma → sağlık kontrolü → başarısızsa otomatik geri dönüş; sonuç `status.json`. Paketin içindeki betik asla çalıştırılmaz.
+- Kurulum: güncelleme paketindeki `guncelle-apache.sh` bir kez elle çalıştırılır (hizmeti, `APM_UPDATE_DIR` ve isteğe bağlı `APM_UPDATE_PUBKEY` ayarını kurar). Docker'da kapalıdır.
+- İmza: `./paketle-guncelleme.sh --anahtar-uret`, `--imzala`, sunucuda `guncelle-apache.sh --imza-anahtari`.
+- API: `GET/POST/DELETE /api/system/update`, `POST /api/system/update/apply` (yalnızca admin).

@@ -1,33 +1,42 @@
-APP_MON - KAPALI ORTAM (RHEL) GUNCELLEME PAKETI
-================================================
-Bu paket, kapali ortamda KURULU olan APP_MON'u yeni surume gunceller.
-Veritabani, ayarlar (/etc/appmon/appmon.env), giris anahtarlari ve tum veriler KORUNUR.
-Internet gerekmez; PostgreSQL/Chrome paketleri bu pakette YOKTUR (zaten kurulu olanlar kullanilir).
+APP_MON - KAPALI ORTAM (RHEL) GUNCELLEME PAKETI  (vSURUM)
+==========================================================
+Bu paket iki yolla uygulanabilir. Veritabani, ayarlar (/etc/appmon/appmon.env), giris anahtarlari ve
+tum veriler KORUNUR. Internet gerekmez; PostgreSQL/Chrome paketleri bu pakette YOKTUR (kurulu olanlar kullanilir).
 
-GUNCELLEME (hedef sunucuda, root ile):
+A) ILK KEZ (bu paket arayuzden guncelleme ozelligini kurar) - sunucuda, root ile:
     tar xzf appmon-guncelleme-vSURUM.tar.gz
     cd appmon-guncelleme
     sha256sum -c SHA256SUMS            # aktarim bozulmadi mi? ("OK" yazmali)
     sudo ./guncelle-apache.sh
 
-Betik sirasiyla: paket butunlugunu dogrular -> veritabani yedegi alir (/var/backups/appmon, son 7 yedek tutulur)
--> eski ikili dosyayi appmon-server.prev olarak saklar -> yenisini yukler -> servisi yeniden baslatir
--> saglik kontrolu yapar. Yeni surum acilmazsa OTOMATIK eski surume doner.
-Veritabani yapisi degisiklikleri (migration) yeni surum acilirken otomatik ve yalnizca ekleyici olarak uygulanir.
+B) SONRAKI GUNCELLEMELER - arayuzden (komut yok):
+    APP_MON'da yonetici olarak "Guncelleme" sayfasi > paketi (appmon-guncelleme-vX.Y.Z.tar.gz) sec > "Yukle ve dogrula"
+    > surumu ve imzayi kontrol et > "Guncellemeyi uygula". Servis birkac saniye yeniden baslar, sayfa kendiliginden yenilenir.
+    Paketi tar'dan acmayin; dosyayi oldugu gibi yukleyin.
 
-Kontrol:
-    systemctl status appmon
-    journalctl -u appmon -f
-    Tarayicida ust cubukta ve Ayarlar > Sistem'de "Surum" gorunur.
+Her iki yolda da sirasiyla: paket butunlugu dogrulanir -> veritabani yedegi alinir (/var/backups/appmon, son 7 yedek)
+-> eski ikili dosya appmon-server.prev olarak saklanir -> yenisi yuklenir -> servis yeniden baslatilir -> saglik kontrolu.
+Yeni surum acilmazsa OTOMATIK eski surume donulur (arayuzde "Geri alindi" gorunur).
+Veritabani degisiklikleri (migration) yeni surum acilirken otomatik ve yalnizca ekleyici olarak uygulanir.
 
-Geri alma:
-    sudo ./guncelle-apache.sh --geri-al        (onceki ikili dosyaya doner)
-    Veritabani yedegini geri yuklemek gerekirse (gomulu PostgreSQL):
-      systemctl stop appmon
-      sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d postgres -c 'DROP DATABASE appmon' -c 'CREATE DATABASE appmon OWNER appmon'
-      zcat /var/backups/appmon/appmon-TARIH.sql.gz | sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d appmon
-      systemctl start appmon
+Nasil calisir (guvenlik): arayuz paketi yalnizca dogrular ve /var/lib/appmon/updates altina hazirlar; ikili dosyalari
+degistirme isini root yetkili ayri bir systemd hizmeti (appmon-update.path/.service -> /usr/local/sbin/appmon-guncelle) yapar.
+Paketin icindeki hicbir betik calistirilmaz; yalnizca ikili dosyalar ve manifest kullanilir. Eski surume gecis engellenir.
 
-Secenekler:  --yedeksiz  (yedegi atla, onerilmez)   --geri-al
-Agent'lar: yeni agent dosyalari /opt/appmon/dist/ altina da yuklenir; izlenen sunuculardaki agent'lar
-calismaya devam eder (guncellemek icin yeni dosyayi o sunuculara kopyalayip agent servisini yeniden baslatin).
+PAKET IMZASI (onerilir): imza acikken yalnizca sizin ozel anahtarinizla imzalanmis paketler kabul edilir
+(yonetici anahtari calinsa bile sahte paket yuklenemez).
+  Paketleme makinesinde (bir kez):  ./paketle-guncelleme.sh --anahtar-uret        (imza/ozel-anahtar.pem GIZLI, imza/genel-anahtar.pem)
+  Sunucuya genel anahtari tanit:    sudo ./guncelle-apache.sh --imza-anahtari genel-anahtar.pem
+  Paket uretirken imzala:           ./paketle-guncelleme.sh v1.0.3 --imzala imza/ozel-anahtar.pem
+
+Kontrol:   systemctl status appmon      journalctl -u appmon -f      journalctl -u appmon-update
+Geri alma: sudo appmon-guncelle --geri-al       (onceki ikili dosyaya doner)
+  Veritabani yedegini geri yuklemek gerekirse (gomulu PostgreSQL):
+    systemctl stop appmon
+    sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d postgres -c 'DROP DATABASE appmon' -c 'CREATE DATABASE appmon OWNER appmon'
+    zcat /var/backups/appmon/appmon-TARIH.sql.gz | sudo -u appmon-pg env LD_LIBRARY_PATH=/opt/appmon/pg/lib /opt/appmon/pg/usr/lib/postgresql/16/bin/psql -h /run/appmon-pg -p 5433 -d appmon
+    systemctl start appmon
+
+Secenekler:  --yedeksiz   --geri-al   --imza-anahtari ANAHTAR.pem
+Not: Docker kurulumunda arayuzden guncelleme kapalidir (PC'de .\guncelle-docker.bat kullanilir).
+Agent'lar: yeni agent dosyalari /opt/appmon/dist/ altina yuklenir; izlenen sunuculardaki agent'lar calismaya devam eder.

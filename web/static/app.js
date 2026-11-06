@@ -135,12 +135,12 @@
   // ---- Üst çubuk ----
   const VIEWS = [
     ['genel', 'Genel bakış'], ['assetler', 'Assetler'], ['topoloji', 'Topoloji'], ['probelar', 'Probe\'lar'], ['senaryolar', 'Senaryolar'],
-    ['alarmlar', 'Alarmlar'], ['bildirimler', 'Bildirimler'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'], ['yardim', 'Yardım'],
+    ['alarmlar', 'Alarmlar'], ['bildirimler', 'Bildirimler'], ['guncelleme', 'Güncelleme'], ['lisans', 'Lisans ve anahtarlar'], ['denetim', 'Denetim'], ['ayarlar', 'Ayarlar'], ['yardim', 'Yardım'],
   ];
 
   // ---- Yetki rolleri ----
   const ROLE_LABEL = { admin: 'Yönetici', operator: 'İşletmeci', viewer: 'İzleyici', agent: 'Agent' };
-  const ADMIN_ONLY = ['lisans', 'denetim', 'bildirimler'];
+  const ADMIN_ONLY = ['lisans', 'denetim', 'bildirimler', 'guncelleme'];
   let ME = { label: '', role: 'admin' };
   const canWrite = () => ME.role === 'admin' || ME.role === 'operator';
   async function loadMe() {
@@ -1801,6 +1801,93 @@
       siemSection(siemList));
   }
 
+  // ---- Sistem güncelleme (paket yükleyerek) ----
+  async function viewGuncelleme() {
+    await refreshHeader();
+    const info = await api('/api/system/update');
+    const fact = (k, v) => h('div', { class: 'fact' }, h('span', null, k), h('b', null, v));
+    const msg = h('p', { class: 'msg', role: 'status' });
+    const root = h('div', { class: 'stack' });
+    const when = (t) => (t ? new Date(t).toLocaleString('tr-TR') : '');
+    const facts = h('div', { class: 'panel facts' },
+      fact('Çalışan sürüm', info.version), fact('Sunucu mimarisi', info.arch),
+      fact('Paket imzası', info.signature_required ? 'Zorunlu (yalnızca imzalı paketler kabul edilir)' : 'Zorunlu değil (imza anahtarı tanıtılmadı)'));
+    root.append(h('section', null, h('h2', null, 'Sistem güncelleme'),
+      h('p', { class: 'muted' }, 'Yeni sürüm paketini (appmon-guncelleme-vX.Y.Z.tar.gz) buradan yükleyerek APP_MON\'u güncelleyin. Veritabanı yedeği otomatik alınır, veriler ve ayarlar korunur; yeni sürüm açılmazsa eski sürüme otomatik dönülür. Güncelleme sırasında servis birkaç saniye yeniden başlar.'),
+      facts));
+    const st = info.status;
+    if (st) {
+      const cls = st.state === 'ok' ? 'ok' : st.state === 'running' ? 'muted' : 'error';
+      const label = { ok: 'Başarılı', running: 'Sürüyor', failed: 'Başarısız', rolled_back: 'Geri alındı' }[st.state] || st.state;
+      root.append(h('section', null, h('h3', null, 'Son güncelleme'), h('div', { class: 'panel' },
+        h('div', { class: 'row' }, h('b', null, `${st.from || '?'} → ${st.to || '?'}`), pill(st.state === 'ok' ? 'up' : st.state === 'running' ? 'unknown' : 'down', label), h('span', { class: 'muted small' }, when(st.time))),
+        st.message ? h('p', { class: cls + ' small' }, st.message) : null)));
+    }
+    if (!info.supported) {
+      root.append(h('section', null, h('div', { class: 'panel' }, h('p', { class: 'error' }, info.reason))));
+      return root;
+    }
+    const waitDone = async (prevTime) => {
+      const box = h('div', { class: 'panel' }, h('p', null, 'Güncelleme uygulanıyor… servis yeniden başlayacak, lütfen bekleyin (sayfayı kapatmayın).'));
+      root.replaceChildren(h('section', null, h('h2', null, 'Sistem güncelleme'), box));
+      for (let i = 0; i < 300; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let cur;
+        try { cur = await api('/api/system/update'); } catch (e) { continue; } // yeniden başlarken bağlantı kopabilir
+        const s = cur.status;
+        if (s && s.time !== prevTime && s.state !== 'running' && !cur.pending) {
+          box.replaceChildren(h('p', { class: s.state === 'ok' ? 'ok' : 'error' }, s.state === 'ok' ? `Güncelleme tamamlandı: ${s.from} → ${s.to}. Sayfa yenileniyor…` : (s.message || 'Güncelleme başarısız.')),
+            s.state === 'ok' ? null : h('button', { type: 'button', onclick: () => location.reload() }, 'Tamam'));
+          if (s.state === 'ok') setTimeout(() => location.reload(), 2500);
+          return;
+        }
+      }
+      box.replaceChildren(h('p', { class: 'error' }, 'Güncelleme sonucu alınamadı. Sunucuda "systemctl status appmon" ve "journalctl -u appmon" ile kontrol edin.'));
+    };
+    const stagedBox = h('div');
+    const showStaged = (s) => {
+      if (!s) { stagedBox.replaceChildren(); return; }
+      const same = s.version === info.version;
+      stagedBox.replaceChildren(h('div', { class: 'panel stack' },
+        h('h3', null, 'Yüklenen paket doğrulandı'),
+        h('div', { class: 'facts' }, fact('Sürüm', `${info.version} → ${s.version}${same ? ' (aynı sürüm, yeniden kurulum)' : ''}`), fact('İmza', s.signed ? 'Doğrulandı' : 'İmzasız'), fact('Dosyalar', s.files.join(', ')), s.notes ? fact('Not', s.notes) : null),
+        h('p', { class: 'muted small' }, 'Uygula\'ya basınca veritabanı yedeği alınır, yeni sürüm yüklenir ve servis yeniden başlar.'),
+        h('div', { class: 'row' },
+          h('button', { type: 'button', class: 'primary', onclick: async (e) => {
+            if (!window.confirm(`APP_MON ${info.version} → ${s.version} güncellensin mi? Servis birkaç saniye yeniden başlayacak.`)) return;
+            e.target.disabled = true;
+            try { await api('/api/system/update/apply', { method: 'POST', body: { id: s.id } }); waitDone(st ? st.time : undefined); }
+            catch (err) { msg.className = 'msg error'; msg.textContent = err.message; e.target.disabled = false; }
+          } }, 'Güncellemeyi uygula'),
+          h('button', { type: 'button', onclick: async () => { try { await api('/api/system/update', { method: 'DELETE' }); showStaged(null); msg.textContent = ''; } catch (err) { msg.className = 'msg error'; msg.textContent = err.message; } } }, 'İptal'))));
+    };
+    showStaged(info.staged);
+    const file = h('input', { type: 'file', accept: '.gz,.tgz,application/gzip' });
+    const bar = h('progress', { max: '100', value: '0', hidden: true });
+    const go = h('button', { type: 'button', class: 'primary' }, 'Yükle ve doğrula');
+    go.addEventListener('click', () => {
+      const f = file.files[0];
+      if (!f) { msg.className = 'msg error'; msg.textContent = 'Önce bir güncelleme paketi seçin.'; return; }
+      msg.className = 'msg'; msg.textContent = ''; go.disabled = true; bar.hidden = false; bar.value = 0;
+      const x = new XMLHttpRequest();
+      x.open('POST', '/api/system/update');
+      x.setRequestHeader('X-API-Key', key); x.setRequestHeader('Content-Type', 'application/gzip');
+      x.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = (e.loaded / e.total) * 100; };
+      x.onload = () => {
+        go.disabled = false; bar.hidden = true;
+        let d = {}; try { d = JSON.parse(x.responseText); } catch (e) { /* yoksay */ }
+        if (x.status === 401) { logout(); return; }
+        if (x.status >= 200 && x.status < 300) { showStaged(d.staged); file.value = ''; msg.className = 'msg ok'; msg.textContent = 'Paket doğrulandı. Uygulamak için aşağıdaki düğmeyi kullanın.'; }
+        else { msg.className = 'msg error'; msg.textContent = d.error || ('Yükleme başarısız (HTTP ' + x.status + ')'); }
+      };
+      x.onerror = () => { go.disabled = false; bar.hidden = true; msg.className = 'msg error'; msg.textContent = 'Bağlantı hatası: paket yüklenemedi.'; };
+      x.send(f);
+    });
+    root.append(h('section', null, h('h3', null, 'Güncelleme paketi yükle'), h('div', { class: 'panel stack' },
+      h('div', { class: 'row' }, file, go), bar, msg)), h('section', null, stagedBox));
+    return root;
+  }
+
   // ---- Yardım (kullanım kılavuzu) ----
   function mdInline(t) {
     const out = [];
@@ -2363,7 +2450,7 @@
       h('section', null, h('h3', null, 'Bağlantı tanımla'), h('div', { class: 'panel' }, form, msg)));
   }
 
-  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, bildirimler: viewBildirimler, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar, yardim: viewYardim };
+  const RENDER = { topoloji: viewTopoloji, genel: viewGenel, assetler: viewAssetler, probelar: viewProbelar, senaryolar: viewSenaryolar, alarmlar: viewAlarmlar, bildirimler: viewBildirimler, lisans: viewLisans, denetim: viewDenetim, ayarlar: viewAyarlar, yardim: viewYardim, guncelleme: viewGuncelleme };
   const AUTO = new Set(['genel', 'assetler', 'topoloji']);
 
   function current() {

@@ -1,0 +1,2 @@
+Kurum ici (ozel) sertifika yetkisi (CA) dosyanizi buraya ca.pem adiyla (PEM) koyun,
+sonra .\guncelle-docker.bat calistirin. APP_MON bu CA ile imzali https sitelerine guvenir.

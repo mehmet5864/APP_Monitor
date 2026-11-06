@@ -5,6 +5,7 @@ import (
 	"appmon/internal/siem"
 	"appmon/internal/version"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -26,7 +27,10 @@ type Server struct {
 	BlockPrivate  bool   // probe'ların özel ağlara erişimini engeller (SaaS'ta açık)
 	RetentionDays int
 	Static        fs.FS
-	PublicURL     string // bildirimlerdeki bağlantı için dış adres (APM_PUBLIC_URL), boş olabilir
+	UpdateDir     string            // arayüzden güncelleme: hazırlama klasörü (boş = kapalı)
+	UpdatePub     ed25519.PublicKey // doluysa yalnızca bu anahtarla imzalı paketler kabul edilir
+	UpdatePubBad  bool              // genel anahtar yapılandırıldı ama okunamadı: güncelleme reddedilir
+	PublicURL     string            // bildirimlerdeki bağlantı için dış adres (APM_PUBLIC_URL), boş olabilir
 
 	Browser        *browser.Manager // gömülü tarayıcı kaydı (nil ise özellik kapalı)
 	BrowserOptions cdp.Options
@@ -109,7 +113,10 @@ func allowed(level, role string) bool {
 }
 
 // guard kimlik doğrular ve rol seviyesini denetler (allowed).
-func (s *Server) guard(level string, h handler) http.HandlerFunc {
+func (s *Server) guard(level string, h handler) http.HandlerFunc { return s.guardMax(level, 0, h) }
+
+// guardMax guard ile aynıdır; istek gövdesi sınırı max bayttır (0 = varsayılan).
+func (s *Server) guardMax(level string, max int64, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := s.authenticate(r)
 		if !ok {
@@ -124,6 +131,9 @@ func (s *Server) guard(level string, h handler) http.HandlerFunc {
 		maxBody := int64(1 << 20)
 		if level == "ingest" {
 			maxBody = 8 << 20
+		}
+		if max > 0 {
+			maxBody = max
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		h(w, r, a)
@@ -191,6 +201,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/maintenance", s.guard("read", s.listMaintenance))
 	mux.HandleFunc("POST /api/maintenance", s.guard("write", s.createMaintenance))
 	mux.HandleFunc("DELETE /api/maintenance/{id}", s.guard("write", s.deleteMaintenance))
+	mux.HandleFunc("GET /api/system/update", s.guard("admin", s.updateInfo))
+	mux.HandleFunc("POST /api/system/update", s.guardMax("admin", 420<<20, s.updateUpload))
+	mux.HandleFunc("POST /api/system/update/apply", s.guard("admin", s.updateApply))
+	mux.HandleFunc("DELETE /api/system/update", s.guard("admin", s.updateCancel))
 	mux.HandleFunc("GET /api/siem-targets", s.guard("admin", s.listSIEM))
 	mux.HandleFunc("POST /api/siem-targets", s.guard("admin", s.createSIEM))
 	mux.HandleFunc("PUT /api/siem-targets/{id}", s.guard("admin", s.updateSIEM))

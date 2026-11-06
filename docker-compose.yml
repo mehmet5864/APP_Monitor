@@ -27,6 +27,9 @@ services:
       APM_ASSET_LIMIT: ${APM_ASSET_LIMIT:-25}
       APM_RETENTION_DAYS: ${APM_RETENTION_DAYS:-14}
       APM_BROWSER_ENABLED: ${APM_BROWSER_ENABLED:-true}
+      APM_CA_FILE: /certs/ca.pem   # kurum içi CA (isteğe bağlı): ./certs/ca.pem dosyasını koyun
+    volumes:
+      - ./certs:/certs:ro
     shm_size: "512mb"   # Chromium için paylaşımlı bellek
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"   # kök olmadan ICMP (ping) probe'u için

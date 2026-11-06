@@ -262,7 +262,7 @@ func tlsProbe(ctx context.Context, d *net.Dialer, spec Spec) (map[string]float64
 	if err != nil {
 		return nil, err
 	}
-	td := &tls.Dialer{NetDialer: d, Config: &tls.Config{ServerName: host, InsecureSkipVerify: spec.HTTP.SkipTLSVerify, MinVersion: tls.VersionTLS12}}
+	td := &tls.Dialer{NetDialer: d, Config: &tls.Config{ServerName: host, InsecureSkipVerify: spec.HTTP.SkipTLSVerify, MinVersion: tls.VersionTLS12, RootCAs: ExtraRoots}}
 	conn, err := td.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err

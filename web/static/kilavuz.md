@@ -5,7 +5,9 @@ APP_MON; sunucu, servis, web sitesi ve ağ cihazlarınızı izleyen, sorun oldu�
 ## 1. Kurulum ve güncelleme
 **Docker (Windows):** proje klasöründe PowerShell ile `.\baslat-docker.bat` (ilk kurulum), `.\guncelle-docker.bat` (güncelleme), `.\durdur-docker.bat` (durdurma). Güncelleme veriyi silmez; veritabanı değişiklikleri açılışta otomatik ve yıkıcı olmayan şekilde uygulanır.
 **Sürüm:** üst çubukta (On-premise etiketinin yanında) ve Ayarlar > Sistem'de görünür (ör. v1.0.0).
-**Çevrimdışı güncelleme (RHEL):** `appmon-guncelleme-vX.Y.Z.tar.gz` paketini sunucuya taşıyın; `tar xzf`, `cd appmon-guncelleme`, `sha256sum -c SHA256SUMS`, `sudo ./guncelle-apache.sh`. Betik veritabanı yedeği alır (/var/backups/appmon), yeni sürümü yükler, sağlık kontrolü yapar; açılmazsa eski sürüme döner. Elle geri alma: `sudo ./guncelle-apache.sh --geri-al`.
+**Güncelleme (arayüzden):** yönetici olarak **Güncelleme** sayfasını açın, `appmon-guncelleme-vX.Y.Z.tar.gz` paketini seçip **Yükle ve doğrula**'ya basın (paket açılmadan, olduğu gibi yüklenir). Sürüm, sağlama toplamları ve (açıksa) imza doğrulanır; **Güncellemeyi uygula** ile veritabanı yedeği alınır, yeni sürüm yüklenir, servis yeniden başlar ve sayfa yenilenir. Yeni sürüm açılmazsa eski sürüme otomatik dönülür ("Geri alındı"). Daha eski sürüme geçilemez.
+**İlk kurulum (RHEL, bir kez):** arayüzden güncelleme hizmeti, güncelleme paketindeki betikle kurulur: `tar xzf appmon-guncelleme-vX.tar.gz; cd appmon-guncelleme; sha256sum -c SHA256SUMS; sudo ./guncelle-apache.sh`. Sonraki güncellemeler arayüzden yapılır. Elle geri alma: `sudo appmon-guncelle --geri-al`. Docker kurulumunda arayüzden güncelleme kapalıdır (`.\guncelle-docker.bat`).
+**Paket imzası (önerilir):** paketleme makinesinde `./paketle-guncelleme.sh --anahtar-uret` ile Ed25519 anahtar çifti üretin (özel anahtar gizli kalır), sunucuya `sudo ./guncelle-apache.sh --imza-anahtari genel-anahtar.pem` ile genel anahtarı tanıtın, paketleri `./paketle-guncelleme.sh vX.Y.Z --imzala ozel-anahtar.pem` ile imzalayın. İmza açıkken imzasız/değiştirilmiş paketler reddedilir.
 **Linux / çevrimdışı kurulum:** paketteki `kur.sh` veya `kur-apache.sh`. Mevcut kurulumda ayar dosyası, veritabanı ve anahtarlar korunur; yalnızca ikili dosya değişir. Güncellemeden önce yedek alın: `pg_dump appmon > appmon-yedek.sql`.
 **Ortam değişkenleri:** `APM_PUBLIC_URL` bildirimlerdeki bağlantı adresidir (ör. `https://apm.sirket.local`).
 
@@ -70,6 +72,9 @@ Bildirimler sayfasının altındaki **SIEM'e log gönderimi** bölümünden hede
 ## 7. Sorun giderme
 - **Yeni özellik görünmüyor:** `.\guncelle-docker.bat` çalıştırın, tarayıcıda Ctrl+F5.
 - **SNMP "zaman aşımı":** servis çalışıyor mu, topluluk adı, izinli yönetici listesi, UDP 161 güvenlik duvarı.
+- **"x509: certificate signed by unknown authority" (https probe'u):** site kurum içi (özel) bir CA veya kendinden imzalı sertifika kullanıyor. İki çözüm var:
+  - **Önerilen — kurum CA'sını tanıtın:** CA sertifikasını PEM olarak alın. Docker: dosyayı proje klasöründe `certs\ca.pem` adıyla koyup `.\guncelle-docker.bat` çalıştırın. RHEL/Linux: dosyayı sunucuya kopyalayıp `/etc/appmon/appmon.env` içine `APM_CA_FILE=/etc/appmon/ca.pem` ekleyin ve `systemctl restart appmon` yapın (alternatif: `cp ca.pem /etc/pki/ca-trust/source/anchors/ && update-ca-trust`, ardından servisi yeniden başlatın). Birden çok CA için aynı dosyaya art arda ekleyebilirsiniz. Uygulama başlarken günlükte "kurum CA dosyası yüklendi" yazar.
+  - **Hızlı çözüm:** probe'u düzenleyip **"Sertifika zincirini doğrula"** kutusunu kapatın (yalnızca o probe için; sertifika kalan gün sayısı yine ölçülür).
 - **SIEM'e olay düşmüyor:** hedefte Deneme gönder'i deneyin; port/protokolü ve güvenlik duvarını kontrol edin; UDP'de hata görünmeyebilir, TCP kullanın.
 - **Bildirim gitmiyor:** Test gönder'i deneyin; kanalın son hatasına bakın; bakım penceresi aktif olabilir; en düşük önem alarmın önemini geçiyor olabilir.
 - **Docker'da MAPI:** desteklenmez; SMTP/Graph/EWS kullanın.
