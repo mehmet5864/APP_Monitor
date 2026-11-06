@@ -305,3 +305,49 @@ func (s *Server) ackScenarioChanges(w http.ResponseWriter, r *http.Request, a Au
 	s.audit(r.Context(), a.TenantID, a.Label, "scenario.ack_changes", name)
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// scenarioLastChange son değişikliğin tüm ayrıntısını (adım adım eklenen/kaldırılan öğeler) döndürür.
+func (s *Server) scenarioLastChange(w http.ResponseWriter, r *http.Request, a Auth) {
+	id, ok := pathID(r)
+	if !ok {
+		fail(w, 400, "geçersiz id")
+		return
+	}
+	var name string
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT name FROM scenarios WHERE id = $1 AND tenant_id = $2`, id, a.TenantID).Scan(&name); err != nil {
+		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	type stepChg struct {
+		Name    string   `json:"name"`
+		Page    string   `json:"page,omitempty"`
+		Added   []string `json:"added"`
+		Removed []string `json:"removed"`
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, at, steps FROM scenario_runs WHERE scenario_id = $1 ORDER BY id DESC LIMIT 30`, id)
+	if err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var runID int64
+		var at time.Time
+		var raw []byte
+		var steps []stepChg
+		if rows.Scan(&runID, &at, &raw) != nil || json.Unmarshal(raw, &steps) != nil {
+			continue
+		}
+		var out []stepChg
+		for _, st := range steps {
+			if len(st.Added)+len(st.Removed) > 0 {
+				out = append(out, st)
+			}
+		}
+		if len(out) > 0 {
+			writeJSON(w, 200, map[string]any{"name": name, "run_id": runID, "at": at, "steps": out})
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"name": name, "steps": []stepChg{}})
+}

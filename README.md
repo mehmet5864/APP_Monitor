@@ -323,3 +323,28 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 - Kurulum: güncelleme paketindeki `guncelle-apache.sh` bir kez elle çalıştırılır (hizmeti, `APM_UPDATE_DIR` ve isteğe bağlı `APM_UPDATE_PUBKEY` ayarını kurar). Docker'da kapalıdır.
 - İmza: `./paketle-guncelleme.sh --anahtar-uret`, `--imzala`, sunucuda `guncelle-apache.sh --imza-anahtari`.
 - API: `GET/POST/DELETE /api/system/update`, `POST /api/system/update/apply` (yalnızca admin).
+
+## yama34 — Sayfa değişikliği ayrıntıları (v1.0.3)
+
+- "Sayfa değişti" rozetleri tıklanabilir; ayrıntı penceresi adım/sayfa bazında eklenen ve kaldırılan öğeleri (başlık, buton, bağlantı, form, giriş, script) okunur Türkçe etiketlerle ve zamanıyla gösterir.
+- API: `GET /api/scenarios/{id}/last-change` (read yetkisi).
+
+## yama35 — Kart ayrıntıları (v1.0.4)
+
+- Genel bakıştaki "Kontrol edilen sayfalar" kartlarında durum rozeti/hata metni tıklanınca ayrıntı penceresi: hata sebebi + başarısız adım, sayfa değişiklikleri, son çalıştırma özeti.
+
+## yama36 — Kart rengi son 3 kontrole göre (v1.0.5)
+
+- Genel bakış kartları: son 3 çalıştırma hepsi başarısız = kırmızı, karışık = sarı (aralıklı hata), hepsi başarılı = yeşil. Yalnızca görünümü etkiler; alarm kuralları değişmedi.
+
+## yama37 — Topoloji ana cihaz görünümü (v1.0.6)
+
+- Topoloji varsayılan olarak yalnızca host/network asset'lerini gösterir; seçilince o cihaz + bağlıları + üzerinde çalışanlar (runs_on, dolaylı dahil). Anahtar düğmesiyle tam görünüm. Yalnızca arayüz.
+
+## yama38 — Topoloji hata/uyarı ayrıntıları (v1.0.7)
+
+- Topolojide seçilen asset için açık alarmlar, hatalı probe/senaryolar ve sayfa değişikliği uyarıları listelenir (mevcut API'lerle; yalnızca arayüz).
+
+## yama39 — Genel bakış sırası + makine kaynak widget'ı (v1.0.8)
+
+- Sıra: Genel bakış, Kontrol edilen sayfalar, Makineler (CPU/RAM/Disk), uygulama haritası ve diğerleri. Yalnızca arayüz (mevcut /api/assets verisi).

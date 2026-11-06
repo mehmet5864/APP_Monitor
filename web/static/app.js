@@ -333,6 +333,64 @@
     document.body.append(ov);
   }
 
+  // Parmak izi öğesini okunur Türkçe etikete çevirir.
+  function chgLabel(x) {
+    const i = x.indexOf(':'); const k = x.slice(0, i); const v = x.slice(i + 1);
+    switch (k) {
+      case 'title': return ['Sayfa başlığı', v];
+      case 'h': { const j = v.indexOf(':'); return ['Başlık (' + v.slice(0, j).toUpperCase() + ')', v.slice(j + 1)]; }
+      case 'form': { const j = v.indexOf(':'); return ['Form (' + v.slice(0, j).toUpperCase() + ')', v.slice(j + 1) || '/']; }
+      case 'in': { const p = v.split(':'); return ['Giriş alanı', (p[2] || '(adsız)') + ' · ' + p[0] + (p[1] ? '/' + p[1] : '')]; }
+      case 'btn': return ['Buton', v];
+      case 'a': return ['Bağlantı', v || '/'];
+      case 'script': return ['Harici script', v];
+      default: return ['Öğe', x];
+    }
+  }
+
+  // Kart ayrıntıları: hata sebebi, sayfa değişiklikleri ve son çalıştırma özeti.
+  async function showChanges(sc) {
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const body = h('div', { class: 'modal-body' }, h('p', { class: 'muted' }, 'yükleniyor…'));
+    const ov = h('div', { class: 'modal-ov', role: 'dialog', 'aria-label': 'Ayrıntılar', onclick: close },
+      h('div', { class: 'modal', onclick: (e) => e.stopPropagation() },
+        h('div', { class: 'row' }, h('h3', null, sc.name + ' — ayrıntılar'), h('button', { type: 'button', class: 'small', onclick: close }, 'Kapat')), body));
+    document.addEventListener('keydown', onKey);
+    document.body.append(ov);
+    try {
+      const recent = sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5;
+      const [runs, d] = await Promise.all([
+        api(`/api/scenarios/${sc.id}/runs`).catch(() => []),
+        recent ? api(`/api/scenarios/${sc.id}/last-change`).catch(() => null) : Promise.resolve(null)]);
+      const parts = [h('p', { class: 'small muted' }, sc.asset + ' · son kontrol ' + ago(sc.last_run))];
+      const list = Array.isArray(runs) ? runs : (runs.runs || []);
+      const last = list[0];
+      if (sc.last_ok === false) {
+        const steps = ((list.find((r) => !r.ok) || {}).steps || []).filter((x) => !x.ok);
+        parts.push(h('div', { class: 'chg-step' }, h('h4', { class: 'error' }, 'Hata sebebi'),
+          h('p', { class: 'mono small error' }, sc.last_error || (last && last.error) || 'Hata ayrıntısı kaydedilmemiş.'),
+          ...steps.map((st) => h('p', { class: 'small' }, h('b', null, st.name), st.page ? ' · ' + st.page : '', ' — ', h('span', { class: 'error' }, st.error || 'başarısız')))));
+      }
+      if (d && d.steps && d.steps.length) {
+        const sec = (t, cls, sign, items) => items.length ? h('div', { class: 'chg-sec' }, h('b', { class: cls }, t + ' (' + items.length + ')'),
+          h('table', { class: 'chg-tbl' }, items.map((x) => { const [kind, val] = chgLabel(x); return h('tr', { class: cls }, h('td', { class: 'sg' }, sign), h('td', { class: 'small muted' }, kind), h('td', { class: 'mono small' }, val)); }))) : null;
+        parts.push(h('div', { class: 'chg-step' }, h('h3', null, 'Tespit edilen sayfa değişiklikleri'),
+          h('p', { class: 'small muted' }, 'Tespit: ' + new Date(d.at).toLocaleString('tr-TR') + ' (' + ago(d.at) + '). Karşılaştırma bir önceki çalıştırmayadır.'),
+          ...d.steps.map((st) => h('div', { class: 'chg-step' }, h('h4', null, st.name + (st.page ? ' · ' + st.page : '')),
+            sec('Eklenen', 'add', '+', st.added || []), sec('Kaldırılan', 'del', '−', st.removed || [])))));
+      } else if (recent) {
+        parts.push(h('p', { class: 'muted small' }, 'Değişiklik ayrıntı kaydı bulunamadı (eski çalıştırmalar silinmiş olabilir).'));
+      }
+      if (last) {
+        parts.push(h('div', { class: 'chg-step' }, h('h4', null, 'Son çalıştırma · ' + (last.ok ? 'başarılı' : 'başarısız') + ' · ' + fmt(last.duration_ms) + ' ms'),
+          ...(last.steps || []).map((st) => h('p', { class: 'small' }, (st.ok ? '✓ ' : '✗ ') + st.name + ' — ' + fmt(st.ms) + ' ms' + (st.error ? ' — ' + st.error : '')))));
+      }
+      if (parts.length === 1) parts.push(h('p', { class: 'muted' }, 'Gösterilecek ayrıntı yok.'));
+      body.replaceChildren(...parts);
+    } catch (e) { body.replaceChildren(h('p', { class: 'error' }, e.message)); }
+  }
+
   function changeBox(sc) {
     const ch = sc.change;
     const body = ch
@@ -343,20 +401,25 @@
       e.stopPropagation(); btn.disabled = true;
       try { await api(`/api/scenarios/${sc.id}/ack-changes`, { method: 'POST' }); render(); } catch (err) { btn.disabled = false; alert(err.message); }
     } }, 'Uyarıyı temizle');
+    const det = h('button', { type: 'button', class: 'small', onclick: (e) => { e.stopPropagation(); showChanges(sc); } }, 'Ayrıntıları göster');
     return h('div', { class: 'chg-box', onclick: (e) => e.stopPropagation() },
-      h('div', { class: 'small' }, h('b', null, 'Neden değişti? '), ch ? h('span', { class: 'muted' }, ago(ch.at)) : null), body, btn);
+      h('div', { class: 'small' }, h('b', null, 'Neden değişti? '), ch ? h('span', { class: 'muted' }, ago(ch.at)) : null), body, h('div', { class: 'row' }, det, btn));
   }
 
   function pageFrames(scenarios) {
     const list = scenarios.filter((x) => x.kind === 'browser');
     if (!list.length) return null;
     const state = (sc) => {
-      if (sc.last_ok === false) return ['bad', 'Başarısız'];
+      // Son 3 çalıştırma: hepsi başarısız = kırmızı, en az biri başarısız = sarı, hepsi başarılı = yeşil.
+      const l3 = (sc.runs || []).slice(-3);
+      if (l3.length && l3.every((r) => !r.ok)) return ['bad', 'Başarısız (son ' + l3.length + ' kontrol)'];
+      if (l3.some((r) => !r.ok)) return ['deg', 'Aralıklı hata (' + l3.filter((r) => !r.ok).length + '/' + l3.length + ')'];
+      if (!l3.length && sc.last_ok === false) return ['bad', 'Başarısız'];
       if (sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5) return ['chg', 'Sayfa değişti'];
       if (sc.last_ok === true) return ['ok', 'Sağlıklı'];
       return ['wait', 'Bekliyor'];
     };
-    const order = { ok: 0, chg: 1, wait: 2, bad: 3 };
+    const order = { ok: 0, chg: 1, wait: 2, deg: 3, bad: 4 };
     list.sort((a, b) => order[state(a)[0]] - order[state(b)[0]] || a.name.localeCompare(b.name));
     // Kullanıcının sürükle-bırak sırası ve kaldırdığı kartlar (tarayıcıda saklanır)
     const lsGet = (k) => { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
@@ -387,9 +450,9 @@
       const imgBox = h('div', { class: 'thumb-img' }, h('span', { class: 'muted small' }, sc.shot ? 'yükleniyor…' : 'görüntü yok'));
       const card = h('div', { class: 'thumb ' + cls, tabindex: sc.shot ? '0' : null, role: sc.shot ? 'button' : null, 'aria-label': `${sc.name}, ${label}` }, imgBox,
         h('div', { class: 'thumb-meta' }, h('b', null, sc.name), h('span', { class: 'muted small' }, sc.asset),
-          h('span', { class: 'row small' }, pill(cls === 'bad' ? 'down' : cls === 'chg' ? 'warning' : cls === 'ok' ? 'up' : 'unknown', label),
+          h('span', { class: 'row small' }, h('a', { href: '#', class: 'pill-link', title: 'Ayrıntıları göster', onclick: (e) => { e.preventDefault(); e.stopPropagation(); showChanges(sc); } }, pill(cls === 'bad' ? 'down' : cls === 'chg' || cls === 'deg' ? 'warning' : cls === 'ok' ? 'up' : 'unknown', label)),
             h('span', { class: 'mono muted' }, ago(sc.last_run))),
-          sc.last_ok === false && sc.last_error ? h('span', { class: 'error small' }, sc.last_error.slice(0, 90)) : null,
+          sc.last_ok === false && sc.last_error ? h('a', { href: '#', class: 'error small', title: 'Hata ayrıntısı', onclick: (e) => { e.preventDefault(); e.stopPropagation(); showChanges(sc); } }, sc.last_error.slice(0, 90)) : null,
           sc.last_ok === false && sc.shot ? h('span', { class: 'muted small' }, 'Görüntü son başarılı kontrolden: ' + ago(sc.shot.at)) : null,
           cls === 'chg' ? changeBox(sc) : null));
       if (sc.shot) {
@@ -425,13 +488,13 @@
     const restore = hiddenCount ? h('p', { class: 'muted small' }, `${hiddenCount} sayfa dashboard'dan kaldırıldı. `,
       h('button', { type: 'button', class: 'linklike', onclick: () => { lsSet('apm_dash_hidden', []); render(); } }, 'Tümünü geri getir')) : null;
     return h('section', null, h('h3', null, 'Kontrol edilen sayfalar'),
-      h('div', { class: 'legend' }, h('span', { class: 'lg up' }, 'Sağlıklı'), h('span', { class: 'lg warn' }, 'Sayfa değişti (24 sa)'), h('span', { class: 'lg down' }, 'Başarısız'), h('span', { class: 'lg unknown' }, 'Bekliyor')),
+      h('div', { class: 'legend' }, h('span', { class: 'lg up' }, 'Sağlıklı'), h('span', { class: 'lg warn' }, 'Sayfa değişti (24 sa) / aralıklı hata'), h('span', { class: 'lg down' }, 'Son 3 kontrol başarısız'), h('span', { class: 'lg unknown' }, 'Bekliyor')),
       grid, restore,
       h('p', { class: 'muted small' }, 'Kartları sürükleyerek sıralayın; sağ tık veya × ile dashboard\'dan kaldırın (senaryo silinmez). Görüntü, tarayıcı senaryolarının son kontrolündeki sayfadır (yalnızca son 10 çalıştırma saklanır). Büyütmek için tıklayın.'));
   }
 
   async function viewGenel() {
-    const [o, d, alerts, topo, tstats] = await Promise.all([refreshHeader(), api('/api/dashboard'), api('/api/alerts?state=open'), api('/api/topology').catch(() => null), api('/api/topology/stats').catch(() => ({}))]);
+    const [o, d, alerts, topo, tstats, allAssets] = await Promise.all([refreshHeader(), api('/api/dashboard'), api('/api/alerts?state=open'), api('/api/topology').catch(() => null), api('/api/topology/stats').catch(() => ({})), api('/api/assets').catch(() => [])]);
     const st = o.by_status;
     const total = Object.values(st).reduce((a, b) => a + b, 0);
     const av = d.availability_24h;
@@ -461,7 +524,7 @@
       const avg = okMs.length ? okMs.reduce((a, b) => a + b, 0) / okMs.length : null;
       return h('div', { class: 'scn-row' },
         h('div', { class: 'scn-name' }, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'),
-          sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'sayfa değişti'), ' ', h('button', { type: 'button', class: 'small', onclick: async () => { await api(`/api/scenarios/${sc.id}/ack-changes`, { method: 'POST' }); render(); } }, 'Temizle')] : null,
+          sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', h('a', { href: '#', class: 'pill-link', title: 'Değişiklik ayrıntıları', onclick: (e) => { e.preventDefault(); showChanges(sc); } }, pill('warning', 'sayfa değişti')), ' ', h('button', { type: 'button', class: 'small', onclick: async () => { await api(`/api/scenarios/${sc.id}/ack-changes`, { method: 'POST' }); render(); } }, 'Temizle')] : null,
           h('div', { class: 'muted small' }, sc.asset)),
         sc.runs.length ? strip(sc.runs) : h('span', { class: 'muted small' }, 'henüz çalışmadı'),
         h('div', { class: 'scn-stat' }, last ? (last.ok ? pill('up', 'Başarılı') : pill('down', 'Başarısız')) : pill('unknown', 'Bekliyor'),
@@ -495,9 +558,22 @@
       paintInfo();
       mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Web uygulamalarına tıklayınca bağlı bileşenleri açılır. Kutuları fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
     }
+    // CPU / RAM / Disk kaynak widget'ı: ölçümü gelen makineler.
+    const machines = (Array.isArray(allAssets) ? allAssets : []).filter((a) => a.latest && ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct'].some((k) => a.latest[k] != null))
+      .sort((a, b) => Math.max(b.latest['host.cpu_pct'] || 0, b.latest['host.mem_pct'] || 0, b.latest['host.disk_pct'] || 0) - Math.max(a.latest['host.cpu_pct'] || 0, a.latest['host.mem_pct'] || 0, a.latest['host.disk_pct'] || 0));
+    const meter = (label, v) => {
+      const lvl = v == null ? '' : v >= 90 ? 'crit' : v >= 75 ? 'warn' : 'ok';
+      const fill = h('span', { class: 'fill ' + lvl }); fill.style.width = (v == null ? 0 : Math.min(100, v)) + '%';
+      return h('div', { class: 'mtr', role: 'img', 'aria-label': `${label} ${v == null ? 'veri yok' : fmt(v) + '%'}` }, h('span', { class: 'mtr-l' }, label), h('span', { class: 'mtr-t' }, fill), h('span', { class: 'mtr-v mono' }, v == null ? '—' : fmt(v) + '%'));
+    };
+    const machineWidget = machines.length ? h('section', null, h('h3', null, 'Makineler · CPU / RAM / Disk'),
+      h('div', { class: 'mach-grid' }, machines.map((a) => h('a', { href: '#assetler', class: 'panel mach', title: 'Asset ayrıntısı', onclick: () => { selectedAsset = a.id; } },
+        h('div', { class: 'row' }, h('span', { class: 'kl' }, kindIcon(a.kind, 26), h('b', null, a.name)), pill(a.status, STATUS[a.status])),
+        meter('CPU', a.latest['host.cpu_pct']), meter('RAM', a.latest['host.mem_pct']), meter('Disk', a.latest['host.disk_pct']),
+        a.last_seen ? h('span', { class: 'muted small mono' }, 'son veri ' + ago(a.last_seen)) : null)))) : null;
     return h('div', null,
-      pageFrames(d.scenarios),
-      h('section', null, h('h2', null, 'Genel bakış'), kpis), mapSection,
+      h('section', null, h('h2', null, 'Genel bakış'), kpis),
+      pageFrames(d.scenarios), machineWidget, mapSection,
       h('div', { class: 'dash2' },
         h('section', null, h('h3', null, 'Erişilebilirlik · son 24 saat'), h('div', { class: 'panel' }, availChart(d.availability),
           h('details', { class: 'adv' }, h('summary', null, 'Tablo olarak göster'), table(['Saat', 'Erişilebilirlik'], availRows, '')))),
@@ -1349,7 +1425,7 @@
       editBox.scrollIntoView({ block: 'start', behavior: 'smooth' });
     };
     const rows = list.map((sc) => h('tr', { class: 'click', onclick: () => showRuns(sc).catch((x) => { msg.className = 'msg error'; msg.textContent = x.message; }) },
-      h('td', null, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'), sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', pill('warning', 'Sayfa değişti ' + ago(sc.last_changed_at))] : null,
+      h('td', null, h('b', null, sc.name), ' ', pill('info', sc.kind === 'browser' ? 'Tarayıcı' : 'HTTP'), sc.last_changed_at && Date.now() - new Date(sc.last_changed_at) < 864e5 ? [' ', h('a', { href: '#', class: 'pill-link', title: 'Değişiklik ayrıntıları', onclick: (e) => { e.preventDefault(); e.stopPropagation(); showChanges(sc); } }, pill('warning', 'Sayfa değişti ' + ago(sc.last_changed_at)))] : null,
         sc.auth && sc.auth.blocked ? [' ', pill('down', 'Giriş durduruldu')] : sc.auth && sc.auth.login_fails ? [' ', pill('warning', `Giriş hatası ${sc.auth.login_fails}/3`)] : null, h('div', { class: 'muted small' }, sc.asset)),
       h('td', { class: 'small' }, sc.steps.map((st, i) => h('div', null, (i + 1) + '. ' + st.method + ' ' + st.name))),
       h('td', { class: 'mono' }, sc.interval_sec + ' sn'),
@@ -2069,6 +2145,7 @@
 
   // ---- Topoloji haritası ----
   let selectedNode = null;
+  let showAllTopo = false;
   const SVGNS = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
     const el = document.createElementNS(SVGNS, tag);
@@ -2350,6 +2427,28 @@
         h('div', { class: 'facts' }, mine.map((e) => h('div', { class: 'fact' }, h('span', null, names.get(e.source)))))));
   }
 
+  // Seçilen asset'in açık alarmları, hatalı probe/senaryoları ve sayfa değişikliği uyarıları.
+  async function topoIssues(n) {
+    const [alerts, probes, scs] = await Promise.all([
+      api('/api/alerts?state=open').catch(() => []), api('/api/probes').catch(() => []), api('/api/scenarios').catch(() => [])]);
+    const al = (Array.isArray(alerts) ? alerts : alerts.alerts || []).filter((a) => a.asset_id === n.id);
+    const bp = (Array.isArray(probes) ? probes : probes.probes || []).filter((p) => p.asset_id === n.id && p.last_error);
+    const sc = (Array.isArray(scs) ? scs : scs.scenarios || []).filter((x) => x.asset_id === n.id);
+    const bs = sc.filter((x) => x.last_error);
+    const chg = sc.filter((x) => x.last_changed_at && Date.now() - new Date(x.last_changed_at) < 864e5);
+    if (!al.length && !bp.length && !bs.length && !chg.length) return null;
+    const rows = [];
+    al.forEach((a) => rows.push(h('div', { class: 'fact' }, h('span', null, pill(a.severity, SEV[a.severity] || a.severity), ' ', h('b', null, a.rule),
+      h('div', { class: 'muted small mono' }, `${a.metric} ${a.comparator} ${a.threshold} (şu an: ${fmt(a.value)}) · ${ago(a.opened_at)}${a.silenced ? ' · bakımda' : ''}${a.ack_by ? ' · üstlenen: ' + a.ack_by : ''}`)))));
+    bp.forEach((p) => rows.push(h('div', { class: 'fact' }, h('span', null, pill('down', 'Probe hatası'), ' ', h('b', null, p.type + ' ' + p.target),
+      h('div', { class: 'error small mono' }, p.last_error)))));
+    bs.forEach((x) => rows.push(h('div', { class: 'fact' }, h('span', null, pill('down', 'Senaryo hatası'), ' ', h('b', null, x.name),
+      h('div', { class: 'error small mono' }, x.last_error)))));
+    chg.forEach((x) => rows.push(h('div', { class: 'fact' }, h('span', null, pill('warning', 'Sayfa değişti'), ' ', h('b', null, x.name), ' ', h('span', { class: 'muted small' }, ago(x.last_changed_at))),
+      h('button', { type: 'button', class: 'small', onclick: () => showChanges(x) }, 'Ayrıntılar'))));
+    return h('div', { class: 'panel issues' }, h('h3', null, `Hata ve uyarılar (${rows.length})`), h('div', { class: 'facts' }, rows));
+  }
+
   async function topoPanel(t, id) {
     const n = t.nodes.find((x) => x.id === id);
     if (typeof id === 'string') return extPanel(t, n, t.edges.filter((e) => e.target === id));
@@ -2359,7 +2458,8 @@
       ? h('div', { class: 'facts' }, items.map((i) => h('div', { class: 'fact' }, h('span', null, i.name, h('span', { class: 'muted small mono' }, `  ${i.depth}. seviye`)), pill(i.status, STATUS[i.status]))))
       : h('p', { class: 'muted' }, empty);
     const mine = t.edges.filter((e) => e.source === id || e.target === id);
-    return h('div', { class: 'grid' },
+    const issues = await topoIssues(n);
+    return h('div', { class: 'grid' }, issues,
       h('div', { class: 'panel' }, h('div', { class: 'row' }, h('h3', null, n.name), pill(n.status, STATUS[n.status])),
         h('p', { class: 'muted small' }, `${KIND[n.kind] || n.kind}, ${n.collection === 'agent' ? 'agent' : 'agent\'sız'}${n.open_alerts ? `, ${n.open_alerts} açık alarm` : ''}`),
         h('h3', null, `Bu asset düşerse etkilenenler (${imp.impacted.length})`), list(imp.impacted, 'Ona bağımlı asset yok.')),
@@ -2391,9 +2491,31 @@
       .filter((k) => t.nodes.some((n) => n.kind === k) || k !== 'external').map((k) => h('span', { class: 'kl' }, kindIcon(k, 38), KIND[k])));
 
     const panel = h('section', { id: 'topo-panel' });
-    const wrap = h('div', { class: 'topo-wrap' }, drawTopology(t, { focus: selectedNode, stats, height: 560, onSelect: (id) => { selectedNode = selectedNode === id ? null : id; render(); } }));
+    // Varsayılan görünüm: yalnızca ana cihazlar (sunucu/ağ). Bir cihaz seçilince o, bağlıları ve üzerinde çalışanlar.
+    const isMain = (n) => n.kind === 'host' || n.kind === 'network';
+    const hasMain = t.nodes.some(isMain);
+    let vt = t, viewNote = null;
+    if (!showAllTopo && hasMain) {
+      const keep = new Set();
+      if (selectedNode == null) t.nodes.filter(isMain).forEach((n) => keep.add(n.id));
+      else {
+        keep.add(selectedNode);
+        t.edges.forEach((e) => { if (e.source === selectedNode) keep.add(e.target); if (e.target === selectedNode) keep.add(e.source); });
+        // üzerinde çalışanlar (dolaylı olanlar dahil)
+        for (let grow = true; grow;) { grow = false; t.edges.forEach((e) => { if (e.kind === 'runs_on' && keep.has(e.target) && !keep.has(e.source)) { keep.add(e.source); grow = true; } }); }
+        // üzerinde çalışanların harici bağlantıları
+        t.edges.forEach((e) => { if (keep.has(e.source) && String(e.target).startsWith('ext:')) keep.add(e.target); });
+      }
+      vt = { ...t, nodes: t.nodes.filter((n) => keep.has(n.id)), edges: t.edges.filter((e) => keep.has(e.source) && keep.has(e.target)) };
+      viewNote = selectedNode == null
+        ? `Yalnızca ana cihazlar gösteriliyor (${vt.nodes.length}/${t.nodes.length}). Ayrıntı için bir cihaza tıklayın.`
+        : `Seçili cihaz, bağlıları ve üzerinde çalışanlar gösteriliyor (${vt.nodes.length}/${t.nodes.length}).`;
+    }
+    const wrap = h('div', { class: 'topo-wrap' }, drawTopology(vt, { focus: selectedNode, stats, height: 560, onSelect: (id) => { selectedNode = selectedNode === id ? null : id; render(); } }));
     const tools = h('div', { class: 'row tools' }, h('span', { class: 'muted small' }, 'Kutuları sürükleyerek yerleştirebilirsiniz (bu tarayıcıda saklanır). Bir kutuya tıklayınca bağlı bileşenlere yakınlaşılır ve istatistikler görünür.'),
-      h('span', { class: 'btns' }, selectedNode != null ? h('button', { type: 'button', onclick: () => { selectedNode = null; render(); } }, 'Tümünü göster') : null,
+      viewNote ? h('span', { class: 'small' }, viewNote) : null,
+      h('span', { class: 'btns' }, selectedNode != null ? h('button', { type: 'button', onclick: () => { selectedNode = null; render(); } }, hasMain && !showAllTopo ? 'Ana cihazlara dön' : 'Tümünü göster') : null,
+        hasMain ? h('button', { type: 'button', onclick: () => { showAllTopo = !showAllTopo; render(); } }, showAllTopo ? 'Yalnızca ana cihazlar' : 'Tüm asset\'leri göster') : null,
         h('button', { type: 'button', onclick: () => { resetPos(); render(); } }, 'Yerleşimi sıfırla')));
     if (selectedNode) panel.append(await topoPanel(t, selectedNode));
     else panel.append(h('p', { class: 'muted' }, 'Etkisini ve bağımlılıklarını görmek için bir asset\'e tıklayın.'));

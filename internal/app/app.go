@@ -181,6 +181,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/scenarios/{id}", s.guard("write", s.deleteScenario))
 	mux.HandleFunc("POST /api/scenarios/{id}/run", s.guard("write", s.runScenarioNow))
 	mux.HandleFunc("POST /api/scenarios/{id}/retry-login", s.guard("write", s.retryLogin))
+	mux.HandleFunc("GET /api/scenarios/{id}/last-change", s.guard("read", s.scenarioLastChange))
 	mux.HandleFunc("POST /api/scenarios/{id}/ack-changes", s.guard("write", s.ackScenarioChanges))
 	mux.HandleFunc("GET /api/scenarios/{id}/runs", s.guard("read", s.listScenarioRuns))
 	mux.HandleFunc("POST /api/recorder", s.guard("write", s.recorderStart))

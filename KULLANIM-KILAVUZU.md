@@ -36,6 +36,18 @@ Probe'lar sayfasından eklenir; her probe aralıkla (sn) çalışır.
 
 ## 5. Alarmlar
 **Alarm panosu:** sorunlu hizmetler renk/şekil ile (Kritik kırmızı sekizgen, Erişilemiyor çarpılı daire, Uyarı sarı üçgen, Bilgi mavi daire, Sağlıklı yeşil).
+**Genel bakış sırası:** üstte Genel bakış kutuları, ardından Kontrol edilen sayfalar, ardından **Makineler · CPU / RAM / Disk** widget'ı (ölçümü gelen makineler; en yüklü olan başta; %75 üzeri sarı, %90 üzeri kırmızı; karta tıklayınca Assetler sayfasında o makine açılır), sonra diğer bölümler.
+
+**Topoloji görünümü:** varsayılan olarak yalnızca ana cihazlar (tür: Sunucu/host ve Ağ) görünür. Bir cihaza tıklayınca o cihaz, doğrudan bağlı olduğu/bağlı olan bileşenler ve üzerinde çalışan her şey (ör. site, veritabanı) gösterilir. "Ana cihazlara dön" ile geri dönülür; "Tüm asset'leri göster" eski tam görünümü açar. Hiç sunucu/ağ türünde asset yoksa tümü gösterilir.
+
+**Topoloji hata/uyarı ayrıntıları:** bir cihaza/asset'e tıklayınca haritanın altında "Hata ve uyarılar" kutusu çıkar: açık alarmlar (önem, kural, ölçüm değeri, süre), hatalı probe'lar ve senaryolar (hata metniyle) ve "sayfa değişti" uyarıları ("Ayrıntılar" ile değişiklik listesi). Sorun yoksa kutu görünmez.
+
+**Kart renkleri (Kontrol edilen sayfalar):** son 3 kontrolün hepsi başarısızsa **kırmızı**, en az biri başarısız (ama hepsi değil) ise **sarı** ("Aralıklı hata"), son 3'ü de başarılıysa **yeşil**. Tek seferlik geçici kesintiler kırmızı alarm görüntüsü oluşturmaz.
+
+**Kart ayrıntıları (Genel bakış > Kontrol edilen sayfalar):** bir kartın durum rozetine (Sağlıklı / Sayfa değişti / Başarısız) veya hata metnine tıklayınca ayrıntı penceresi açılır: hata sebebi ve başarısız adım, sayfa değişiklikleri, son çalıştırmanın adım adım özeti. Kartın kendisine tıklamak ekran görüntüsünü büyütür.
+
+**Sayfa değişti ayrıntıları:** tarayıcı senaryosunda bir sayfanın yapısı değiştiğinde "Sayfa değişti" rozeti çıkar. Rozete (Genel bakış, Senaryolar listesi) veya "Ayrıntıları göster" düğmesine tıklayınca hangi adımda/sayfada neyin **eklendiği** ya da **kaldırıldığı** (başlık, buton, bağlantı, form, giriş alanı, harici script) okunur biçimde, tespit zamanıyla birlikte listelenir. Karşılaştırma bir önceki çalıştırmayadır; "Uyarıyı temizle" işareti kaldırır.
+
 **Kısmen erişilemiyor (sarı):** bir hizmetin birden çok probe/senaryosu varsa (ör. ana sayfa + alt sayfalar/portlar) durum hepsine bakılarak belirlenir: hepsi başarılı = Çalışıyor, hepsi başarısız = Erişilemiyor (kırmızı, "Servis erişilemiyor" kritik alarmı), bir kısmı başarısız = **Kısmen erişilemiyor** (sarı, "Servis kısmen erişilemiyor" uyarı alarmı). Yani sayfa açılıyor ama bazı alt bileşenlere gidilemiyorsa kırmızı değil sarı görünür. Tek probe'lu hizmetlerde davranış değişmez.
 **Kurallar:** ad, metrik, koşul (>, <...), eşik, pencere (sn), önem. Kural pencere içindeki **ortalama** değeri eşikle karşılaştırır; 15 sn'de bir değerlendirilir. Düzenlenen kuralın açık alarmları kapanır, koşul sürüyorsa yeniden açılır. "Hazır şablonlar" ile tek tıkla eklenir.
 **Kapsam:** hizmetler (boş = hepsi), grup, etiket ile kuralı sınırlayın.
