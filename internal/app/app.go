@@ -196,6 +196,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/alert-rules/{id}", s.guard("write", s.updateRule))
 	mux.HandleFunc("DELETE /api/alert-rules/{id}", s.guard("write", s.deleteRule))
 	mux.HandleFunc("GET /api/alerts", s.guard("read", s.listAlerts))
+	mux.HandleFunc("POST /api/alerts/clear", s.guard("write", s.clearAlerts))
 	mux.HandleFunc("POST /api/alerts/{id}/ack", s.guard("write", s.ackAlert))
 	mux.HandleFunc("DELETE /api/alerts/{id}/ack", s.guard("write", s.unackAlert))
 	mux.HandleFunc("PUT /api/assets/{id}/meta", s.guard("write", s.putAssetMeta))

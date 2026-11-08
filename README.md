@@ -348,3 +348,25 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 ## yama39 — Genel bakış sırası + makine kaynak widget'ı (v1.0.8)
 
 - Sıra: Genel bakış, Kontrol edilen sayfalar, Makineler (CPU/RAM/Disk), uygulama haritası ve diğerleri. Yalnızca arayüz (mevcut /api/assets verisi).
+
+## yama40 — Hareketli geçişli arka plan (v1.0.9)
+
+- `body::before` ile aksan renginden türeyen, yavaş kayan degrade; prefers-reduced-motion ve yazdırmada kapalı. Yalnızca CSS.
+
+## yama41 — Alarmları temizle, topoloji hizmet seçici (v1.0.10)
+
+- Genel bakıştan Uygulama haritası kaldırıldı.
+- Zil açılır penceresinde "Alarmları temizle": `POST /api/alerts/clear` (write yetkisi, denetim kaydı `alert.clear`).
+- Topolojide hizmet açılır listesi: seçilenin tüm doğrudan/dolaylı bağlıları gösterilir.
+
+## yama42 — 16:9 görünüm (v1.0.11)
+
+- Genel bakış için 1920x1080 sabit sahne, ekrana ölçeklenen, tam ekran duvar/TV modu. Yalnızca arayüz.
+
+## yama43 — Ayarlar: sayfa oranı 16:9 çerçeve (v1.0.12)
+
+- Ayarlar > Görünüm > Sayfa oranı: Standart / 16:9 çerçeve (`apm_layout`, `theme.js` ile erken uygulanır). Yalnızca arayüz.
+
+## yama44 — Çözünürlüğe uyumlu geniş düzen, başlık hizası (v1.0.13)
+
+- 16:9 çerçeve kaldırıldı; Ayarlar > Sayfa düzeni: Otomatik (geniş ekranda çok sütun) / Dar. Genel bakışta tüm widget başlıkları kutu dışında. Üst menü 1400-2300 px arasında taşmaz.

@@ -494,7 +494,7 @@
   }
 
   async function viewGenel() {
-    const [o, d, alerts, topo, tstats, allAssets] = await Promise.all([refreshHeader(), api('/api/dashboard'), api('/api/alerts?state=open'), api('/api/topology').catch(() => null), api('/api/topology/stats').catch(() => ({})), api('/api/assets').catch(() => [])]);
+    const [o, d, alerts, allAssets] = await Promise.all([refreshHeader(), api('/api/dashboard'), api('/api/alerts?state=open'), api('/api/assets').catch(() => [])]);
     const st = o.by_status;
     const total = Object.values(st).reduce((a, b) => a + b, 0);
     const av = d.availability_24h;
@@ -512,10 +512,10 @@
     const availRows = d.availability.map((v, i) => h('tr', null, h('td', { class: 'mono' }, hourLabel(i)), h('td', { class: 'mono' }, v == null ? '—' : v.toFixed(2) + '%')));
     const alertRows = d.alerts_critical.map((c, i) => h('tr', null, h('td', { class: 'mono' }, hourLabel(i)), h('td', { class: 'mono' }, c), h('td', { class: 'mono' }, d.alerts_other[i])));
 
-    const statusPanel = h('div', { class: 'panel stack' }, h('h3', null, 'Asset durumu'),
+    const statusPanel = h('div', { class: 'panel stack' },
       total ? h('div', { class: 'bar', role: 'img', 'aria-label': 'Asset durum dağılımı' }, ['up', 'degraded', 'down', 'offline', 'unknown'].map(seg)) : h('p', { class: 'muted' }, 'Henüz asset yok.'),
       h('div', { class: 'legend' }, ['up', 'degraded', 'down', 'offline', 'unknown'].map((k) => h('span', { class: 'lg ' + k }, `${STATUS[k]}: ${st[k] || 0}`))),
-      h('h3', null, 'Türe göre'),
+      h('div', { class: 'sub-h' }, 'Türe göre'),
       Object.keys(d.by_kind).length ? rankBars(Object.entries(Object.entries(d.by_kind).reduce((m, [k, n]) => { const kk = k === 'url' ? 'website' : k; m[kk] = (m[kk] || 0) + n; return m; }, {})).sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ kind: k, label: KIND[k] || k, value: n, text: String(n) }))) : h('p', { class: 'muted' }, 'Henüz veri yok.'));
 
     const scen = d.scenarios.length ? h('div', { class: 'panel scn' }, d.scenarios.map((sc) => {
@@ -531,33 +531,6 @@
           avg != null ? h('div', { class: 'mono small muted' }, `ort. ${fmt(avg)} ms`) : null));
     }), h('p', { class: 'muted small' }, 'Her çubuk bir çalıştırma: yükseklik süreyi, kırmızı tam çubuk başarısızlığı gösterir (son 30).')) : null;
 
-    let mapSection = null;
-    if (topo && topo.nodes.length) {
-      const info = h('div', { class: 'map-info' });
-      let sel = null;
-      const map = drawTopology(topo, { stats: tstats, height: 460, webOnly: true, onSelect: (id) => { sel = sel === id ? null : id; map.setFocus(sel); paintInfo(); } });
-      // Seçili uygulamayı "Kontrol edilen sayfalar" bölümüne ekler (tarayıcı senaryosu olanlar için).
-      const pageButton = (n) => {
-        if (n.kind === 'external') return null;
-        const mine = d.scenarios.filter((x) => x.kind === 'browser' && x.asset === n.name);
-        if (!mine.length) return h('button', { type: 'button', title: 'Bu uygulamanın tarayıcı senaryosu yok; Senaryolar > Tarayıcıdan kaydet ile oluşturun.', onclick: () => { location.hash = 'senaryolar'; } }, 'Kontrol edilen sayfalara ekle…');
-        let hid = []; try { hid = JSON.parse(localStorage.getItem('apm_dash_hidden') || '[]'); } catch (e) { hid = []; }
-        const off = mine.filter((x) => hid.includes(x.id));
-        if (!off.length) return h('button', { type: 'button', disabled: true, title: 'Bu uygulama zaten sayfanın üstündeki "Kontrol edilen sayfalar" bölümünde.' }, 'Kontrol edilen sayfalarda ✓');
-        return h('button', { type: 'button', class: 'primary', onclick: () => { try { localStorage.setItem('apm_dash_hidden', JSON.stringify(hid.filter((i) => !off.some((x) => x.id === i)))); } catch (e) { /* */ } render(); } }, 'Kontrol edilen sayfalara ekle');
-      };
-      const paintInfo = () => {
-        if (sel == null) { info.replaceChildren(h('span', { class: 'muted small' }, 'Haritada yalnızca web uygulamaları görünür. Birine tıklayın: ona bağlı bileşenler açılır ve kutularda istatistikleri görünür. Kutuları sürükleyerek yerleştirebilirsiniz.')); return; }
-        const n = topo.nodes.find((x) => x.id === sel), c = map.connected(sel);
-        info.replaceChildren(h('span', { class: 'kl' }, kindIcon(n.kind, 34), h('b', null, n.name), pill(n.status, STATUS[n.status])),
-          h('span', { class: 'muted small' }, `${c.dependents} bileşen buna bağımlı · bu ${c.dependencies} bileşene bağımlı`),
-          h('span', { class: 'btns' }, h('button', { type: 'button', onclick: () => { sel = null; map.setFocus(null); paintInfo(); } }, 'Yalnızca web uygulamaları'),
-            h('button', { type: 'button', onclick: () => { selectedNode = sel; location.hash = 'topoloji'; } }, 'Topolojide göster'),
-            pageButton(n)));
-      };
-      paintInfo();
-      mapSection = h('section', null, h('h3', null, 'Uygulama haritası'), h('p', { class: 'muted small' }, 'Web uygulamalarına tıklayınca bağlı bileşenleri açılır. Kutuları fareyle tutup sürükleyebilirsiniz; yerleşim tarayıcıda saklanır.'), h('div', { class: 'topo-wrap map' }, map), info);
-    }
     // CPU / RAM / Disk kaynak widget'ı: ölçümü gelen makineler.
     const machines = (Array.isArray(allAssets) ? allAssets : []).filter((a) => a.latest && ['host.cpu_pct', 'host.mem_pct', 'host.disk_pct'].some((k) => a.latest[k] != null))
       .sort((a, b) => Math.max(b.latest['host.cpu_pct'] || 0, b.latest['host.mem_pct'] || 0, b.latest['host.disk_pct'] || 0) - Math.max(a.latest['host.cpu_pct'] || 0, a.latest['host.mem_pct'] || 0, a.latest['host.disk_pct'] || 0));
@@ -566,18 +539,31 @@
       const fill = h('span', { class: 'fill ' + lvl }); fill.style.width = (v == null ? 0 : Math.min(100, v)) + '%';
       return h('div', { class: 'mtr', role: 'img', 'aria-label': `${label} ${v == null ? 'veri yok' : fmt(v) + '%'}` }, h('span', { class: 'mtr-l' }, label), h('span', { class: 'mtr-t' }, fill), h('span', { class: 'mtr-v mono' }, v == null ? '—' : fmt(v) + '%'));
     };
-    const machineWidget = machines.length ? h('section', null, h('h3', null, 'Makineler · CPU / RAM / Disk'),
+    const machineWidget = machines.length ? h('section', { class: 'ov-mach' }, h('h3', null, 'Makineler · CPU / RAM / Disk'),
       h('div', { class: 'mach-grid' }, machines.map((a) => h('a', { href: '#assetler', class: 'panel mach', title: 'Asset ayrıntısı', onclick: () => { selectedAsset = a.id; } },
         h('div', { class: 'row' }, h('span', { class: 'kl' }, kindIcon(a.kind, 26), h('b', null, a.name)), pill(a.status, STATUS[a.status])),
         meter('CPU', a.latest['host.cpu_pct']), meter('RAM', a.latest['host.mem_pct']), meter('Disk', a.latest['host.disk_pct']),
         a.last_seen ? h('span', { class: 'muted small mono' }, 'son veri ' + ago(a.last_seen)) : null)))) : null;
-    return h('div', null,
-      h('section', null, h('h2', null, 'Genel bakış'), kpis),
-      pageFrames(d.scenarios), machineWidget, mapSection,
+    if (tv169) {
+      const open = (Array.isArray(alerts) ? alerts : []).slice(0, 6);
+      const clock = h('span', { class: 'mono tv-clock' });
+      const tick = () => { clock.textContent = new Date().toLocaleString('tr-TR'); };
+      tick(); clearInterval(tvTimer); tvTimer = setInterval(() => { if (!tv169) clearInterval(tvTimer); else tick(); }, 1000);
+      return h('div', { class: 'tv-stage' },
+        h('div', { class: 'tv-top' }, h('b', { class: 'tv-title' }, 'APP_MON · Genel bakış'), clock,
+          h('button', { type: 'button', class: 'small', onclick: () => setTv(false) }, '✕ Çık')),
+        kpis,
+        h('div', { class: 'tv-mid' }, pageFrames(d.scenarios) || h('section', null, h('p', { class: 'muted' }, 'Tarayıcı senaryosu yok.')), machineWidget || h('section', null, h('p', { class: 'muted' }, 'Makine ölçümü yok.'))),
+        h('section', { class: 'tv-alerts' }, h('h3', null, `Açık alarmlar (${(alerts || []).length})`), alertTable(open, false)));
+    }
+    return h('div', { class: 'ov' },
+      h('section', null, h('div', { class: 'row head-row' }, h('h2', null, 'Genel bakış'),
+        h('button', { type: 'button', class: 'small', title: 'Duvar ekranı / TV için 16:9 görünüm', onclick: () => setTv(true) }, '16:9 görünüm')), kpis),
+      (() => { const pf = pageFrames(d.scenarios); if (pf) pf.classList.add('ov-pages'); if (pf && machineWidget) pf.classList.add('with-mach'); return pf; })(), machineWidget,
       h('div', { class: 'dash2' },
         h('section', null, h('h3', null, 'Erişilebilirlik · son 24 saat'), h('div', { class: 'panel' }, availChart(d.availability),
           h('details', { class: 'adv' }, h('summary', null, 'Tablo olarak göster'), table(['Saat', 'Erişilebilirlik'], availRows, '')))),
-        h('section', null, statusPanel)),
+        h('section', null, h('h3', null, 'Asset durumu'), statusPanel)),
       h('div', { class: 'dash2 even' },
         h('section', null, h('h3', null, 'Alarmlar · son 24 saat'), h('div', { class: 'panel' },
           h('div', { class: 'legend' }, h('span', { class: 'lg crit' }, 'Kritik'), h('span', { class: 'lg warn' }, 'Uyarı / bilgi')),
@@ -2088,15 +2074,17 @@
     if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme');
   }
   function applyAccent(a) { if (a && a !== 'auto' && a !== 'teal') document.documentElement.setAttribute('data-accent', a); else document.documentElement.removeAttribute('data-accent'); }
+  function applyLayout(l) { if (l === 'narrow') document.documentElement.setAttribute('data-layout', 'narrow'); else document.documentElement.removeAttribute('data-layout'); }
   function applyPalette(p) { if (p && p !== 'default') document.documentElement.setAttribute('data-palette', p); else document.documentElement.removeAttribute('data-palette'); }
 
   async function viewAyarlar() {
     await refreshHeader();
     const info = await api('/api/settings');
-    let theme = getPref('apm_theme', 'system'), accent = getPref('apm_accent', 'auto'), palette = getPref('apm_palette', 'default');
+    let theme = getPref('apm_theme', 'system'), accent = getPref('apm_accent', 'auto'), palette = getPref('apm_palette', 'default'), layout = getPref('apm_layout', 'auto');
     const themeBox = h('div', { class: 'seg', role: 'group', 'aria-label': 'Tema' });
     const palBox = h('div', { class: 'seg', role: 'group', 'aria-label': 'Renk paleti' });
     const accentBox = h('div', { class: 'seg', role: 'group', 'aria-label': 'Vurgu rengi' });
+    const layBox = h('div', { class: 'seg', role: 'group', 'aria-label': 'Sayfa düzeni' });
     const paint = () => {
       themeBox.replaceChildren(...[['system', 'Sistem'], ['light', 'Açık'], ['dark', 'Koyu']].map(([v, t]) =>
         h('button', { type: 'button', 'aria-pressed': String(theme === v), onclick: () => { theme = v; setPref('apm_theme', v); applyTheme(v); paint(); } }, t)));
@@ -2104,6 +2092,8 @@
         const sw = h('span', { class: 'swatch pal' }); sw.style.background = c; sw.style.boxShadow = '0 0 0 4px ' + bg + ' inset';
         return h('button', { type: 'button', 'aria-pressed': String(palette === v), onclick: () => { palette = v; setPref('apm_palette', v); applyPalette(v); paint(); } }, sw, t);
       }));
+      layBox.replaceChildren(...[['auto', 'Otomatik (ekran çözünürlüğüne uyar)'], ['narrow', 'Dar (ortalanmış, 1180 px)']].map(([v, t]) =>
+        h('button', { type: 'button', 'aria-pressed': String(layout === v), onclick: () => { layout = v; setPref('apm_layout', v); applyLayout(v); paint(); } }, t)));
       accentBox.replaceChildren(...ACCENTS.map(([v, t, c]) => {
         const sw = h('span', { class: 'swatch' }); if (c) sw.style.background = c; else sw.hidden = true;
         return h('button', { type: 'button', 'aria-pressed': String(accent === v), onclick: () => { accent = v; setPref('apm_accent', v); applyAccent(v); paint(); } }, sw, t);
@@ -2117,6 +2107,7 @@
           h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Tema'), themeBox),
           h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Renk paleti'), palBox),
           h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Vurgu rengi (paletin rengini değiştirir)'), accentBox),
+          h('div', { class: 'stack' }, h('span', { class: 'muted small' }, 'Sayfa düzeni (Otomatik: geniş ekranlarda yan boşluklar kullanılır ve içerik çok sütuna yayılır)'), layBox),
           h('p', { class: 'muted small' }, 'Bu tercihler yalnızca bu tarayıcıda saklanır. "Sistem" işletim sisteminizin açık/koyu ayarını izler.'))),
       window.APM && window.APM.reports ? window.APM.reports.section() : null,
       h('div', { class: 'grid' },
@@ -2146,6 +2137,25 @@
   // ---- Topoloji haritası ----
   let selectedNode = null;
   let showAllTopo = false;
+  let tv169 = false, tvTimer = null;
+  try { tv169 = localStorage.getItem('apm_tv169') === '1'; } catch (e) { tv169 = false; }
+  // 16:9 görünüm: sabit 1920x1080 sahne, ekrana sığacak şekilde ölçeklenir (duvar ekranı / TV).
+  function fitTv() {
+    const st = document.querySelector('.tv-stage'); if (!st) return;
+    const k = Math.min(innerWidth / 1920, innerHeight / 1080);
+    st.style.transform = `translate(-50%, -50%) scale(${k})`;
+  }
+  function setTv(on) {
+    tv169 = on;
+    try { localStorage.setItem('apm_tv169', on ? '1' : '0'); } catch (e) { /* yoksay */ }
+    document.body.classList.toggle('tv', on);
+    if (on) { try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); } catch (e) { /* yoksay */ } }
+    else { clearInterval(tvTimer); try { document.fullscreenElement && document.exitFullscreen(); } catch (e) { /* yoksay */ } }
+    render();
+  }
+  window.addEventListener('resize', fitTv);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tv169 && !document.fullscreenElement) setTv(false); });
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && tv169) setTv(false); });
   const SVGNS = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
     const el = document.createElementNS(SVGNS, tag);
@@ -2495,24 +2505,28 @@
     const isMain = (n) => n.kind === 'host' || n.kind === 'network';
     const hasMain = t.nodes.some(isMain);
     let vt = t, viewNote = null;
-    if (!showAllTopo && hasMain) {
+    if (!showAllTopo && (hasMain || selectedNode != null)) {
       const keep = new Set();
       if (selectedNode == null) t.nodes.filter(isMain).forEach((n) => keep.add(n.id));
       else {
+        // Seçilen asset'e herhangi bir yolla (her iki yönde, dolaylı olanlar dahil) bağlı olan her şey.
         keep.add(selectedNode);
-        t.edges.forEach((e) => { if (e.source === selectedNode) keep.add(e.target); if (e.target === selectedNode) keep.add(e.source); });
-        // üzerinde çalışanlar (dolaylı olanlar dahil)
-        for (let grow = true; grow;) { grow = false; t.edges.forEach((e) => { if (e.kind === 'runs_on' && keep.has(e.target) && !keep.has(e.source)) { keep.add(e.source); grow = true; } }); }
-        // üzerinde çalışanların harici bağlantıları
-        t.edges.forEach((e) => { if (keep.has(e.source) && String(e.target).startsWith('ext:')) keep.add(e.target); });
+        for (let grow = true; grow;) { grow = false; t.edges.forEach((e) => { if (keep.has(e.source) !== keep.has(e.target)) { keep.add(e.source); keep.add(e.target); grow = true; } }); }
       }
       vt = { ...t, nodes: t.nodes.filter((n) => keep.has(n.id)), edges: t.edges.filter((e) => keep.has(e.source) && keep.has(e.target)) };
       viewNote = selectedNode == null
         ? `Yalnızca ana cihazlar gösteriliyor (${vt.nodes.length}/${t.nodes.length}). Ayrıntı için bir cihaza tıklayın.`
-        : `Seçili cihaz, bağlıları ve üzerinde çalışanlar gösteriliyor (${vt.nodes.length}/${t.nodes.length}).`;
+        : `Seçili asset ve ona doğrudan/dolaylı bağlı her şey gösteriliyor (${vt.nodes.length}/${t.nodes.length}).`;
     }
     const wrap = h('div', { class: 'topo-wrap' }, drawTopology(vt, { focus: selectedNode, stats, height: 560, onSelect: (id) => { selectedNode = selectedNode === id ? null : id; render(); } }));
     const tools = h('div', { class: 'row tools' }, h('span', { class: 'muted small' }, 'Kutuları sürükleyerek yerleştirebilirsiniz (bu tarayıcıda saklanır). Bir kutuya tıklayınca bağlı bileşenlere yakınlaşılır ve istatistikler görünür.'),
+      (() => {
+        const sel = h('select', { id: 'topo-pick', 'aria-label': 'Hizmet seç' }, h('option', { value: '' }, 'Hizmet seç… (tüm bağlıları gelsin)'),
+          t.nodes.filter((n) => typeof n.id === 'number').sort((a, b) => a.name.localeCompare(b.name, 'tr')).map((n) => h('option', { value: String(n.id) }, `${n.name} (${KIND[n.kind] || n.kind})`)));
+        sel.value = selectedNode == null ? '' : String(selectedNode);
+        sel.addEventListener('change', () => { selectedNode = sel.value ? Number(sel.value) : null; render(); });
+        return h('label', { class: 'small topo-pick' }, 'Hizmet: ', sel);
+      })(),
       viewNote ? h('span', { class: 'small' }, viewNote) : null,
       h('span', { class: 'btns' }, selectedNode != null ? h('button', { type: 'button', onclick: () => { selectedNode = null; render(); } }, hasMain && !showAllTopo ? 'Ana cihazlara dön' : 'Tümünü göster') : null,
         hasMain ? h('button', { type: 'button', onclick: () => { showAllTopo = !showAllTopo; render(); } }, showAllTopo ? 'Yalnızca ana cihazlar' : 'Tüm asset\'leri göster') : null,
@@ -2592,7 +2606,8 @@
     try {
       if (ADMIN_ONLY.includes(v) && ME.role !== 'admin') { $('#view').replaceChildren(h('p', { class: 'error' }, 'Bu sayfa için yönetici yetkisi gerekir (rolünüz: ' + (ROLE_LABEL[ME.role] || ME.role) + ').')); return; }
       const node = await RENDER[v]();
-      if (v === current()) $('#view').replaceChildren(node);
+      document.body.classList.toggle('tv', tv169 && v === 'genel');
+      if (v === current()) { $('#view').replaceChildren(node); fitTv(); }
     } catch (e) {
       if (key) $('#view').replaceChildren(h('p', { class: 'error' }, 'Yüklenemedi: ' + e.message));
     } finally { rendering = false; }
@@ -2650,6 +2665,10 @@
       const list = await api('/api/alerts?state=open');
       pop.replaceChildren(h('div', { class: 'pop-head' }, h('b', null, 'Açık uyarılar'), h('span', { class: 'muted small' }, list.length + ' alarm')),
         list.length ? h('ul', { class: 'pop-list' }, list.slice(0, 8).map((a) => h('li', null, pill(a.severity, SEV[a.severity]), h('div', null, h('b', null, a.rule), h('div', { class: 'muted small' }, `${a.asset} · ${ago(a.opened_at)}`))))) : h('p', { class: 'muted small pad' }, 'Açık uyarı yok. Her şey yolunda.'),
+        list.length ? h('button', { type: 'button', class: 'pop-clear', onclick: async () => {
+          if (!window.confirm(`${list.length} açık alarm temizlensin mi?\n(Koşul hâlâ sürüyorsa alarm yeniden açılır.)`)) return;
+          try { await api('/api/alerts/clear', { method: 'POST', body: {} }); await refreshBell(); toggleBell(false); render(); } catch (e) { alert(e.message); }
+        } }, 'Alarmları temizle') : null,
         h('a', { class: 'pop-foot', href: '#alarmlar', onclick: () => toggleBell(false) }, list.length > 8 ? `Tümünü gör (+${list.length - 8})` : 'Alarmlar sayfasına git'));
     } catch (e) { pop.replaceChildren(h('p', { class: 'error small pad' }, e.message)); }
   }

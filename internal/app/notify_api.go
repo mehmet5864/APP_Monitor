@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -339,4 +340,17 @@ func (s *Server) putAssetMeta(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	s.audit(r.Context(), a.TenantID, a.Label, "asset.meta", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/alerts/clear: tüm açık alarmları kapatır (çözüldü olarak işaretler).
+// Koşul hâlâ sürüyorsa kural değerlendirmesi alarmı yeniden açar.
+func (s *Server) clearAlerts(w http.ResponseWriter, r *http.Request, a Auth) {
+	res, err := s.DB.ExecContext(r.Context(), `UPDATE alerts SET state = 'resolved', resolved_at = now() WHERE tenant_id = $1 AND state = 'open'`, a.TenantID)
+	if err != nil {
+		fail(w, 500, "veritabanı hatası")
+		return
+	}
+	n, _ := res.RowsAffected()
+	s.audit(r.Context(), a.TenantID, a.Label, "alert.clear", fmt.Sprintf("%d açık alarm temizlendi", n))
+	writeJSON(w, 200, map[string]any{"cleared": n})
 }

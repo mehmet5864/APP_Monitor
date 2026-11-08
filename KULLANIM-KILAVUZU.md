@@ -36,7 +36,17 @@ Probe'lar sayfasından eklenir; her probe aralıkla (sn) çalışır.
 
 ## 5. Alarmlar
 **Alarm panosu:** sorunlu hizmetler renk/şekil ile (Kritik kırmızı sekizgen, Erişilemiyor çarpılı daire, Uyarı sarı üçgen, Bilgi mavi daire, Sağlıklı yeşil).
+**Sayfa düzeni (Ayarlar > Görünüm):** varsayılan **Otomatik**: ekran çözünürlüğüne uyar; geniş ekranlarda yan boşluklar kullanılır, Genel bakış 12 sütunluk bir ızgaraya yayılır (≥1500 px: grafikler yan yana ikişerli, ≥2100 px: dörderli; makine kaynakları sayfalarla yan yana). **Dar**: eski ortalanmış 1180 px düzeni. Tercih tarayıcıda saklanır. Genel bakıştaki "16:9 görünüm" düğmesi ayrı bir duvar/TV (tam ekran pano) modudur. Tüm widget başlıkları kutunun üstünde, aynı hizada gösterilir.
+
+**16:9 görünüm (pano):** Genel bakış başlığındaki "16:9 görünüm" düğmesi, sayfayı duvar ekranı/TV için 1920×1080 oranında tek ekrana sığan (kaydırmasız) bir panoya çevirir: üstte KPI'lar, ortada kontrol edilen sayfalar ve makine kaynakları, altta açık alarmlar; saat gösterilir, veriler otomatik yenilenir. Tam ekrana geçer; "✕ Çık" düğmesi veya Esc ile çıkılır. Ekran oranı farklıysa sahne oranını koruyarak ölçeklenir. Tercih tarayıcıda saklanır.
+
+**Alarmları temizle:** sağ üstteki zil simgesine tıklayınca açılan listede "Alarmları temizle" düğmesi tüm açık alarmları kapatır (onay ister, Denetim kaydına yazılır, yazma yetkisi gerekir). Sorunun koşulu hâlâ sürüyorsa alarm bir sonraki değerlendirmede yeniden açılır.
+
+**Tema:** arka plan, seçili aksan rengine göre yavaşça hareket eden geçişli bir degrade kullanır (açık/koyu ve palet seçimleriyle uyumlu). İşletim sisteminde "hareketi azalt" açıksa animasyon durur; yazdırmada gösterilmez.
+
 **Genel bakış sırası:** üstte Genel bakış kutuları, ardından Kontrol edilen sayfalar, ardından **Makineler · CPU / RAM / Disk** widget'ı (ölçümü gelen makineler; en yüklü olan başta; %75 üzeri sarı, %90 üzeri kırmızı; karta tıklayınca Assetler sayfasında o makine açılır), sonra diğer bölümler.
+
+**Topoloji hizmet seçici:** Topoloji sayfasındaki "Hizmet" listesinden bir hizmet seçince o hizmet ve ona doğrudan/dolaylı bağlı her şey (hem bağımlı olduğu hem ona bağımlı olanlar) gösterilir. Genel bakıştaki "Uygulama haritası" kaldırıldı; harita yalnızca Topoloji sayfasındadır.
 
 **Topoloji görünümü:** varsayılan olarak yalnızca ana cihazlar (tür: Sunucu/host ve Ağ) görünür. Bir cihaza tıklayınca o cihaz, doğrudan bağlı olduğu/bağlı olan bileşenler ve üzerinde çalışan her şey (ör. site, veritabanı) gösterilir. "Ana cihazlara dön" ile geri dönülür; "Tüm asset'leri göster" eski tam görünümü açar. Hiç sunucu/ağ türünde asset yoksa tümü gösterilir.
 
