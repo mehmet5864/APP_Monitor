@@ -42,6 +42,40 @@ func hasUnhealthyDependency(start int64, deps map[int64][]int64, unhealthy func(
 	return false
 }
 
+// impactedBy sağlıklı görünen her asset için, doğrudan veya dolaylı olarak bağımlı olduğu (üzerinde çalıştığı
+// sunucu, kullandığı veritabanı vb.) çalışmayan asset'leri döndürür. Yalnızca etkilenenler yer alır;
+// kendisi down/offline olanlar zaten kırmızıdır. deps[a] = a'nın bağımlı olduğu asset'ler.
+func impactedBy(status map[int64]string, deps map[int64][]int64) map[int64][]int64 {
+	unhealthy := func(id int64) bool { s := status[id]; return s == "down" || s == "offline" }
+	out := map[int64][]int64{}
+	for id := range status {
+		if unhealthy(id) {
+			continue
+		}
+		seen := map[int64]bool{id: true}
+		stack := append([]int64(nil), deps[id]...)
+		var bad []int64
+		for len(stack) > 0 {
+			n := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			if unhealthy(n) {
+				bad = append(bad, n) // altındakilere inmeye gerek yok: zaten çalışmayan bir halka bulundu
+				continue
+			}
+			stack = append(stack, deps[n]...)
+		}
+		if len(bad) > 0 {
+			sort.Slice(bad, func(i, j int) bool { return bad[i] < bad[j] })
+			out[id] = bad
+		}
+	}
+	return out
+}
+
 // GET /api/topology -> düğümler, kenarlar ve olası kök nedenler.
 func (s *Server) getTopology(w http.ResponseWriter, r *http.Request, a Auth) {
 	ctx := r.Context()
@@ -141,7 +175,41 @@ func (s *Server) getTopology(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		hrows.Close()
 	}
-	writeJSON(w, 200, map[string]any{"nodes": nodes, "edges": edges, "root_causes": rootCauses(status, deps)})
+	// Bağımlılığı çalışmayan asset'ler (ör. sunucusu düşen uygulama ve onun veritabanı) haritada da kırmızı görünür.
+	names := map[int64]string{}
+	for _, n := range nodes {
+		if id, ok := n["id"].(int64); ok {
+			names[id], _ = n["name"].(string)
+		}
+	}
+	for id, bad := range impactedBy(status, deps) {
+		for _, n := range nodes {
+			if nid, ok := n["id"].(int64); ok && nid == id {
+				by := []string{}
+				for i, b := range bad {
+					if i < 3 {
+						by = append(by, names[b])
+					}
+				}
+				n["impacted"], n["impacted_by"] = true, by
+			}
+		}
+	}
+	// NetFlow'dan öğrenilen konuşmalar (yalnızca iki ucu da tanımlı asset olanlar): bağımlılık sayılmaz, isteğe bağlı kaplama olarak çizilir.
+	flowEdges := []map[string]any{}
+	if frows, err := s.DB.QueryContext(ctx,
+		`SELECT src_asset, dst_asset, sum(bytes) b FROM flow_agg
+		  WHERE tenant_id = $1 AND bucket > now() - interval '24 hours' AND src_asset IS NOT NULL AND dst_asset IS NOT NULL AND src_asset <> dst_asset
+		  GROUP BY 1, 2 ORDER BY b DESC LIMIT 100`, a.TenantID); err == nil {
+		for frows.Next() {
+			var sa, da, b int64
+			if frows.Scan(&sa, &da, &b) == nil {
+				flowEdges = append(flowEdges, map[string]any{"id": "flow:" + strconv.FormatInt(sa, 10) + ":" + strconv.FormatInt(da, 10), "source": sa, "target": da, "kind": "flow", "auto": true, "bytes": b})
+			}
+		}
+		frows.Close()
+	}
+	writeJSON(w, 200, map[string]any{"nodes": nodes, "edges": edges, "flow_edges": flowEdges, "root_causes": rootCauses(status, deps)})
 }
 
 func (s *Server) createEdge(w http.ResponseWriter, r *http.Request, a Auth) {

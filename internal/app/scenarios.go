@@ -35,6 +35,7 @@ type scenarioPayload struct {
 	BSteps  []browser.Step `json:"browser_steps"`
 	Auth    *browser.Auth  `json:"auth"`
 	DraftID string         `json:"draft_id"`
+	ProbeID int64          `json:"probe_id"` // isteğe bağlı: karttaki hızlı durum için aynı asset'in probe'u
 }
 
 func (p *scenarioPayload) isBrowser() bool { return p.Kind == "browser" }
@@ -138,6 +139,7 @@ type stepOut struct {
 	Added   []string `json:"added,omitempty"`
 	Removed []string `json:"removed,omitempty"`
 	Ignored int      `json:"ignored,omitempty"` // dinamik sayılıp yok sayılan öğe sayısı
+	Muted   int      `json:"muted,omitempty"`   // yoksay kurallarıyla elenen/maskelenen öğe sayısı
 	Shot    bool     `json:"shot,omitempty"`
 }
 
@@ -245,7 +247,7 @@ func stepSummary(steps []scenario.Step) []map[string]any {
 func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 	rows, err := s.DB.QueryContext(r.Context(),
 		`SELECT sc.id, sc.asset_id, a.name, sc.name, sc.interval_sec, sc.timeout_ms, sc.enabled, sc.verify_tls, sc.vars, sc.steps,
-		        sc.last_run, sc.last_ok, sc.last_error, sc.last_duration_ms, sc.kind, sc.last_changed_at, sc.auth, sc.session_at, sc.login_fails, sc.auth_blocked
+		        sc.last_run, sc.last_ok, sc.last_error, sc.last_duration_ms, sc.kind, sc.last_changed_at, sc.auth, sc.session_at, sc.login_fails, sc.auth_blocked, sc.probe_id
 		 FROM scenarios sc JOIN assets a ON a.id = sc.asset_id WHERE sc.tenant_id = $1 ORDER BY a.name, sc.id`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
@@ -267,7 +269,8 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 		var authRaw []byte
 		var loginFails int
 		var authBlocked bool
-		if rows.Scan(&id, &assetID, &asset, &name, &interval, &timeout, &enabled, &verify, &varsRaw, &stepsRaw, &lastRun, &lastOK, &lastErr, &lastDur, &kind, &changedAt, &authRaw, &sessionAt, &loginFails, &authBlocked) != nil {
+		var probeID sql.NullInt64
+		if rows.Scan(&id, &assetID, &asset, &name, &interval, &timeout, &enabled, &verify, &varsRaw, &stepsRaw, &lastRun, &lastOK, &lastErr, &lastDur, &kind, &changedAt, &authRaw, &sessionAt, &loginFails, &authBlocked, &probeID) != nil {
 			continue
 		}
 		var vars map[string]string
@@ -305,6 +308,9 @@ func (s *Server) listScenarios(w http.ResponseWriter, r *http.Request, a Auth) {
 		if changedAt.Valid {
 			it["last_changed_at"] = changedAt.Time
 		}
+		if probeID.Valid {
+			it["probe_id"] = probeID.Int64
+		}
 		var au browser.Auth
 		if json.Unmarshal(authRaw, &au) == nil && au.Enabled { // parola ve selector ayrıntıları dışarı verilmez
 			sum := map[string]any{"mode": au.Mode, "username": au.Username, "check_url": au.CheckURL, "user_selector": au.UserSelector, "pass_selector": au.PassSelector, "submit_selector": au.SubmitSelector, "logged_in_text": au.LoggedInText}
@@ -339,6 +345,12 @@ func (s *Server) createScenario(w http.ResponseWriter, r *http.Request, a Auth) 
 	if err := p.prepare(true); err != nil {
 		fail(w, 400, err.Error())
 		return
+	}
+	if p.isBrowser() {
+		if q, err := s.quotasOf(r.Context(), a.TenantID); err == nil && !q.AllowBrowser {
+			fail(w, 403, tenantFeatureErr("Tarayıcı senaryoları").Error())
+			return
+		}
 	}
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -384,6 +396,14 @@ func (s *Server) createScenario(w http.ResponseWriter, r *http.Request, a Auth) 
 			return
 		}
 	}
+	var probeID any
+	if p.ProbeID != 0 {
+		if !s.probeBelongs(r.Context(), tx, a.TenantID, assetID, p.ProbeID) {
+			fail(w, 400, "probe bulunamadı")
+			return
+		}
+		probeID = p.ProbeID
+	}
 	varsJSON, _ := json.Marshal(p.Vars)
 	var stepsJSON []byte
 	if p.isBrowser() {
@@ -397,9 +417,9 @@ func (s *Server) createScenario(w http.ResponseWriter, r *http.Request, a Auth) 
 	}
 	var id int64
 	err = tx.QueryRowContext(r.Context(),
-		`INSERT INTO scenarios (tenant_id, asset_id, name, interval_sec, timeout_ms, verify_tls, vars, steps, kind, auth)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-		a.TenantID, assetID, p.Name, p.IntervalSec, p.TimeoutMS, p.verifyTLS(), string(varsJSON), string(stepsJSON), p.Kind, string(authJSON)).Scan(&id)
+		`INSERT INTO scenarios (tenant_id, asset_id, name, interval_sec, timeout_ms, verify_tls, vars, steps, kind, auth, probe_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		a.TenantID, assetID, p.Name, p.IntervalSec, p.TimeoutMS, p.verifyTLS(), string(varsJSON), string(stepsJSON), p.Kind, string(authJSON), probeID).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			fail(w, http.StatusConflict, "bu isimde bir senaryo zaten var")
@@ -450,6 +470,10 @@ func (s *Server) runScenarioNow(w http.ResponseWriter, r *http.Request, a Auth) 
 	sc, err := s.loadScenario(r.Context(), a.TenantID, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, 404, "senaryo bulunamadı")
+		return
+	}
+	if err == nil && s.isPaused(r.Context(), a.TenantID) {
+		fail(w, 409, errPaused.Error())
 		return
 	}
 	if err != nil {
@@ -552,6 +576,7 @@ type scenarioEdit struct {
 	Enabled     *bool         `json:"enabled"`
 	Steps       []editStep    `json:"steps"`
 	Auth        *browser.Auth `json:"auth"`
+	ProbeID     *int64        `json:"probe_id"` // 0 = eşleşmeyi kaldır; yoksa değişmez
 }
 
 // updateScenario kayıtlı bir senaryoyu düzenler. Başlık/gövde/değişken gibi gizli alanlar adımın eski sırası (from)
@@ -693,6 +718,19 @@ func (s *Server) updateScenario(w http.ResponseWriter, r *http.Request, a Auth) 
 		fail(w, 500, "veritabanı hatası")
 		return
 	}
+	if req.ProbeID != nil {
+		if *req.ProbeID == 0 {
+			tx.ExecContext(r.Context(), `UPDATE scenarios SET probe_id = NULL WHERE id = $1`, id)
+		} else {
+			var assetID int64
+			tx.QueryRowContext(r.Context(), `SELECT asset_id FROM scenarios WHERE id = $1`, id).Scan(&assetID)
+			if !s.probeBelongs(r.Context(), tx, a.TenantID, assetID, *req.ProbeID) {
+				fail(w, 400, "probe bulunamadı")
+				return
+			}
+			tx.ExecContext(r.Context(), `UPDATE scenarios SET probe_id = $2 WHERE id = $1`, id, *req.ProbeID)
+		}
+	}
 	if credsChanged {
 		tx.ExecContext(r.Context(), `UPDATE scenarios SET session = NULL, login_fails = 0, auth_blocked = false WHERE id = $1`, id)
 	}
@@ -706,4 +744,13 @@ func (s *Server) updateScenario(w http.ResponseWriter, r *http.Request, a Auth) 
 	}
 	s.audit(r.Context(), a.TenantID, a.Label, "scenario.update", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// probeBelongs probe'un bu kiracıda olduğunu doğrular (farklı asset'in probe'u da eşleştirilebilir:
+// sunucu probe'u ve senaryoyu çoğu zaman ayrı adlarla tanımlanmış olabilir).
+func (s *Server) probeBelongs(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, tenant, asset, probe int64) bool {
+	var one int
+	return q.QueryRowContext(ctx, `SELECT 1 FROM probes WHERE id = $1 AND tenant_id = $2`, probe, tenant).Scan(&one) == nil
 }

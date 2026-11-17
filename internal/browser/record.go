@@ -39,6 +39,8 @@ type Session struct {
 	notify   chan struct{}
 	created  time.Time
 	lastUse  time.Time
+	blockAt  time.Time // bot koruması denetiminin son zamanı (kısıtlama)
+	blockMsg string
 	closed   bool
 	opMu     sync.Mutex // girdiler sırayla işlenir
 	typedSel string
@@ -249,6 +251,7 @@ type State struct {
 	Steps   []string `json:"steps"`
 	Seq     int64    `json:"seq"`
 	Expires int64    `json:"expires_in"`
+	Blocked string   `json:"blocked,omitempty"` // site bot koruması engel sayfası gösteriyorsa açıklama
 }
 
 func (s *Session) State() State {
@@ -258,6 +261,14 @@ func (s *Session) State() State {
 	for _, x := range s.steps {
 		st.Steps = append(st.Steps, x.Name)
 	}
+	if time.Since(s.blockAt) > 2*time.Second {
+		s.blockAt = time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		txt, _ := s.page.BodyText(ctx)
+		s.blockMsg = BotBlocked(s.page.Title(ctx), txt, s.page.docStatusCode())
+		cancel()
+	}
+	st.Blocked = s.blockMsg
 	return st
 }
 

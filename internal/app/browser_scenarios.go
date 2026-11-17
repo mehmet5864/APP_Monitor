@@ -190,7 +190,7 @@ func capFlips(m map[string]int) map[string]int {
 
 // toOuts adım sonuçlarını önceki çalıştırmayla (son iki kontrol) karşılaştırır. Daha önce en az volatileFlips kez
 // gelip giden öğeler dinamik sayılır, farktan çıkarılır. Güncellenmiş sayaçlar ikinci değer olarak döner.
-func toOuts(res browser.Result, prev map[int][]string, flips map[int]map[string]int) ([]stepOut, int, map[int]map[string]int) {
+func toOuts(res browser.Result, prev map[int][]string, flips map[int]map[string]int, ign map[int][]ignoreRule) ([]stepOut, int, map[int]map[string]int) {
 	outs := make([]stepOut, len(res.Steps))
 	changes := 0
 	newFlips := map[int]map[string]int{}
@@ -204,7 +204,10 @@ func toOuts(res browser.Result, prev map[int][]string, flips map[int]map[string]
 	for i, r := range res.Steps {
 		o := stepOut{Name: r.Name, OK: r.OK, MS: r.MS, Error: r.Error, Page: r.Page, Hash: r.Hash, Shot: len(r.Shot) > 0}
 		if p, ok := prev[i]; ok && r.OK {
-			added, removed := browser.Diff(p, r.Items)
+			p, _ = applyIgnores(p, ign[i])
+			cur, muted := applyIgnores(r.Items, ign[i])
+			o.Muted = muted
+			added, removed := browser.Diff(p, cur)
 			if newFlips[i] == nil {
 				newFlips[i] = map[string]int{}
 			}
@@ -345,7 +348,7 @@ func (s *Server) executeBrowser(ctx context.Context, sc scenarioRow, maxDur time
 			s.DB.ExecContext(ctx, `UPDATE scenarios SET session = $1, session_at = now() WHERE id = $2`, string(b), sc.id)
 		}
 	}
-	outs, changes, newFlips := toOuts(res, prev, flips)
+	outs, changes, newFlips := toOuts(res, prev, flips, s.loadIgnores(ctx, sc.id))
 	dur := sumMS(outs)
 	errMsg := ""
 	if err != nil {
@@ -386,7 +389,7 @@ func (s *Server) testBrowser(w http.ResponseWriter, r *http.Request, p scenarioP
 	ctx, cancel := context.WithTimeout(r.Context(), browserRunLimit)
 	defer cancel()
 	res, err := s.replayBrowser(ctx, p.BSteps, p.Vars, p.TimeoutMS, false, p.Auth, nil)
-	outs, _, _ := toOuts(res, nil, nil)
+	outs, _, _ := toOuts(res, nil, nil, nil)
 	msg := ""
 	if err != nil {
 		msg = browserError(p.BSteps, err)

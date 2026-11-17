@@ -237,6 +237,10 @@ func snmpProbe(ctx context.Context, d *net.Dialer, spec Spec, block bool) (map[s
 	if err != nil {
 		return nil, err
 	}
+	spec.Det.Add("Çözümlenen adres", ip.String())
+	spec.Det.Add("SNMP sürümü", map[int]string{0: "v1", 1: "v2c"}[version])
+	spec.Det.Add("OID", oid)
+	spec.Det.Add("Değer", truncate(text, 200))
 	if e := spec.Opts.Expect; e != "" && !strings.Contains(text, e) {
 		return nil, fmt.Errorf("SNMP değeri %q beklenen %q içermiyor", truncate(text, 60), e)
 	}

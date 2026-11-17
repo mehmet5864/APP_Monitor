@@ -3,4 +3,4 @@
 package version
 
 // Version semantik sürümdür (vANA.ARA.YAMA).
-var Version = "v1.0.13"
+var Version = "v3.17.0"

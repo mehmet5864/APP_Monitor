@@ -1,0 +1,10 @@
+# Performans > Veritabani sorgulari icin (pg_stat_statements) ve ajanin 127.0.0.1:5432 uzerinden baglanabilmesi icin.
+# Guncellemelerde docker-compose.yml degisir; bu dosya korunur.
+services:
+  db:
+    command: postgres -c shared_preload_libraries=pg_stat_statements
+    ports:
+      - "127.0.0.1:5432:5432"
+  server:
+    environment:
+      APM_LOG_EVENTS: "1"   # Dagitik izleme > Loglar: log saklamayi acar (uyari ve ustu, 3 gun)

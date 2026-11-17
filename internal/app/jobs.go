@@ -16,10 +16,16 @@ import (
 
 // RunJobs arka plan işlerini başlatır; ctx iptal edilince durur.
 func (s *Server) RunJobs(ctx context.Context) {
-	go every(ctx, 5*time.Second, s.runDueProbes)
-	go every(ctx, 5*time.Second, s.runDueScenarios)
+	s.startedAt = time.Now()
+	go every(ctx, 5*time.Second, func(c context.Context) { s.runDueProbesN(c, false) })
+	go every(ctx, 5*time.Second, func(c context.Context) { s.runDueScenariosN(c, false) })
+	go every(ctx, 10*time.Minute, s.slaJob)
+	go every(ctx, 2*time.Minute, s.anomalyJob)
 	go every(ctx, 15*time.Second, s.markOffline)
 	go every(ctx, 15*time.Second, s.evaluateAlerts)
+	go every(ctx, 15*time.Second, s.rolloutJob)
+	go every(ctx, time.Minute, s.surfaceMetrics)
+	go every(ctx, time.Hour, s.maintainPartitions)
 	go every(ctx, time.Hour, s.purgeOld)
 }
 
@@ -47,14 +53,23 @@ type dueProbe struct {
 
 // runDueProbes zamanı gelen probe'ları çalıştırır. last_run, SKIP LOCKED ile aynı sorguda
 // işaretlendiği için birden fazla sunucu örneği aynı probe'u iki kez çalıştırmaz.
-func (s *Server) runDueProbes(ctx context.Context) {
+func (s *Server) runDueProbes(ctx context.Context) { s.runDueProbesN(ctx, true) }
+
+// runDueProbesN: wait=false iken zamanlayıcı turu beklemez; yuva sayısı (APM_PROBE_CONCURRENCY) kadar probe aynı anda
+// çalışır, yavaş probe'lar sonraki turları geciktirmez. Yalnızca boş yuva kadar probe seçilir.
+func (s *Server) runDueProbesN(ctx context.Context, wait bool) {
+	sem := s.sems().probe
+	free := cap(sem) - len(sem)
+	if free <= 0 {
+		return
+	}
 	rows, err := s.DB.QueryContext(ctx,
 		`UPDATE probes SET last_run = now() WHERE id IN (
 		     SELECT id FROM probes
-		     WHERE enabled AND (last_run IS NULL OR last_run + make_interval(secs => interval_sec) <= now())
-		     ORDER BY last_run NULLS FIRST LIMIT 100 FOR UPDATE SKIP LOCKED)
+		     WHERE enabled AND tenant_id NOT IN (SELECT id FROM tenants WHERE disabled OR paused) AND (last_run IS NULL OR last_run + make_interval(secs => interval_sec) <= now())
+		     ORDER BY last_run NULLS FIRST LIMIT $1 FOR UPDATE SKIP LOCKED)
 		 RETURNING id, tenant_id, asset_id, type, target, timeout_ms,
-		           http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects, options`)
+		           http_method, headers, body, expect_status, expect_text, verify_tls, follow_redirects, options`, free)
 	if err != nil {
 		log.Printf("probe sorgusu: %v", err)
 		return
@@ -76,22 +91,53 @@ func (s *Server) runDueProbes(ctx context.Context) {
 	rows.Close()
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 20)
 	for _, p := range due {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(p dueProbe) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			res := probe.RunX(ctx, probe.Spec{Type: p.typ, Target: p.target,
-				Timeout: time.Duration(p.timeoutMS) * time.Millisecond, HTTP: p.http, Opts: p.opts}, s.BlockPrivate)
+			spec := probe.Spec{Type: p.typ, Target: p.target,
+				Timeout: time.Duration(p.timeoutMS) * time.Millisecond, HTTP: p.http, Opts: p.opts}
+			if p.typ == "host" && p.opts.Method == "ssh" {
+				if s.BlockPrivate {
+					s.recordProbe(ctx, p, false, 0, "SaaS modunda SSH ile ölçüm kapalıdır", nil)
+					return
+				}
+				if q, qe := s.quotasOf(ctx, p.tenant); qe == nil && !q.AllowSSH {
+					s.recordProbe(ctx, p, false, 0, "SSH ile ölçüm bu kiracı için kapalı", nil)
+					return
+				}
+				val, kind, err := s.secretValue(ctx, p.tenant, p.opts.SecretID)
+				if err != nil {
+					s.recordProbe(ctx, p, false, 0, "SSH kimlik bilgisi kasadan alınamadı: "+err.Error(), nil)
+					return
+				}
+				if kind == "password" {
+					spec.Opts.SSHPass = []byte(strings.TrimRight(string(val), "\n"))
+				} else {
+					spec.Opts.SSHKey = val
+				}
+				spec.OnHostKey = s.learnHostKey(p)
+			}
+			s.prepareProbeOutputs(ctx, p, &spec)
+			res := probe.RunX(ctx, spec, s.BlockPrivate)
+			s.afterProbe(ctx, p, spec, &res)
 			if res.Err != nil {
 				log.Printf("probe #%d (%s) başarısız: %v", p.id, p.typ, res.Err)
 			}
 			s.recordProbe(ctx, p, res.Up, res.Latency, probeError(p.target, res.Err), res.Extra)
+			if len(res.Detail) > 0 || res.Up {
+				// ayrıntı yoksa ve probe başarısızsa önceki başarılı ölçümün ayrıntısı korunur
+				if b, e := json.Marshal(res.Detail); e == nil {
+					s.DB.ExecContext(ctx, `UPDATE probes SET last_detail = $2::jsonb WHERE id = $1`, p.id, string(b))
+				}
+			}
 		}(p)
 	}
-	wg.Wait()
+	if wait {
+		wg.Wait()
+	}
 }
 
 // probeError hatayı kullanıcıya gösterilecek kısa bir metne çevirir; localhost hedeflerinde Docker ipucu ekler.
@@ -172,13 +218,13 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 		pts = append(pts, point{"probe.latency_ms", float64(latency.Microseconds()) / 1000, now})
 	}
 	for k, v := range extra {
-		if strings.HasPrefix(k, "host.") {
+		if strings.HasPrefix(k, "host.") || strings.HasPrefix(k, "net.") || strings.HasPrefix(k, "snmp.") || strings.HasPrefix(k, "db.") {
 			pts = append(pts, point{k, v, now}) // ana makine ölçümleri agent'ın adlarıyla aynıdır; mevcut kurallar çalışır
 		} else {
 			pts = append(pts, point{"probe." + k, v, now})
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE probes SET last_error = $2, last_ok = $3 WHERE id = $1`, p.id, errMsg, up); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE probes SET last_error = $2, last_ok = $3, fail_streak = CASE WHEN $3::boolean THEN 0 ELSE fail_streak + 1 END WHERE id = $1`, p.id, errMsg, up); err != nil {
 		return
 	}
 	status, err := assetHealth(ctx, tx, p.asset)
@@ -195,23 +241,82 @@ func (s *Server) recordProbe(ctx context.Context, p dueProbe, up bool, latency t
 	tx.Commit()
 }
 
+// offlineAgentSec ajanın çevrimdışı sayılacağı sessizlik süresidir (APM_OFFLINE_AGENT_SEC, varsayılan 90 sn).
+func (s *Server) offlineAgentSec() int { return clampInt(s.OfflineAgentSec, 90, 30, 86400) }
+
+// warmupLeft sunucu (yeniden) başladıktan sonra çevrimdışı işaretlemenin askıda kaldığı kalan süreyi verir (D2):
+// kesintide tamponlayan ajanların yeniden bağlanmasına zaman tanınır; toplu "çevrimdışı" ve bildirim fırtınası olmaz.
+func (s *Server) warmupLeft() time.Duration {
+	if s.startedAt.IsZero() {
+		return 0
+	}
+	w := time.Duration(s.OfflineWarmupSec) * time.Second
+	if s.OfflineWarmupSec == 0 {
+		w = 2 * time.Minute
+	}
+	if s.OfflineWarmupSec < 0 {
+		w = 0
+	}
+	if left := w - time.Since(s.startedAt); left > 0 {
+		return left
+	}
+	return 0
+}
+
 // markOffline veri göndermeyen asset'leri çevrimdışı işaretler.
 func (s *Server) markOffline(ctx context.Context) {
+	if s.warmupLeft() > 0 {
+		return
+	}
+	agentSec := s.offlineAgentSec()
+	agentlessSec := 180
+	if 2*agentSec > agentlessSec {
+		agentlessSec = 2 * agentSec
+	}
 	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE assets a SET status = 'offline'
 		 WHERE status <> 'offline' AND last_seen IS NOT NULL AND (
-		     (collection = 'agent' AND last_seen < now() - interval '90 seconds')
+		     (collection = 'agent' AND last_seen < now() - make_interval(secs => $1))
 		  OR (collection = 'agentless' AND NOT EXISTS (SELECT 1 FROM probes p WHERE p.asset_id = a.id)
 		      AND NOT EXISTS (SELECT 1 FROM scenarios sc WHERE sc.asset_id = a.id)
-		      AND last_seen < now() - interval '180 seconds'))`); err != nil {
+		      AND last_seen < now() - make_interval(secs => $2)))`, agentSec, agentlessSec); err != nil {
 		log.Printf("çevrimdışı işaretleme: %v", err)
+	}
+}
+
+// maintainPartitions metrics bölümlerini (bugünden 7 gün ilerisine kadar) hazırlar.
+func (s *Server) maintainPartitions(ctx context.Context) {
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT appmon_metrics_ensure(7)`).Scan(&n); err != nil {
+		log.Printf("metrics bölümleri: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("metrics: %d yeni günlük bölüm oluşturuldu", n)
+	}
+}
+
+// dropOldPartitions saklama süresinin (kiracılar arasında en uzunu) dışında kalan metrics bölümlerini DROP eder.
+func (s *Server) dropOldPartitions(ctx context.Context) {
+	days := s.RetentionDays
+	var lic int
+	if s.DB.QueryRowContext(ctx, `SELECT COALESCE(max(retention_days), 0) FROM licenses`).Scan(&lic) == nil && lic > days {
+		days = lic
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, `SELECT appmon_metrics_drop_before(now() - make_interval(days => $1))`, days+1).Scan(&n); err != nil {
+		log.Printf("eski metrics bölümleri: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("metrics: saklama süresi dolan %d bölüm silindi", n)
 	}
 }
 
 // evaluateAlerts her kural için pencere ortalamasını eşikle karşılaştırır; ihlalde alarm açar, düzelince kapatır.
 func (s *Server) evaluateAlerts(ctx context.Context) {
 	rules, err := s.DB.QueryContext(ctx,
-		`SELECT id, tenant_id, metric, comparator, threshold, window_sec, name, severity, asset_ids, group_name, tag FROM alert_rules WHERE enabled`)
+		`SELECT id, tenant_id, metric, comparator, threshold, window_sec, name, severity, asset_ids, group_name, tag FROM alert_rules WHERE enabled AND tenant_id NOT IN (SELECT id FROM tenants WHERE disabled OR paused)`)
 	if err != nil {
 		log.Printf("kural sorgusu: %v", err)
 		return
@@ -235,6 +340,9 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 	rules.Close()
 
 	for _, r := range list {
+		if !s.ruleDue(r.id, r.win) {
+			continue // pencere kısaysa sık, uzunsa seyrek değerlendirilir (15–60 sn)
+		}
 		rows, err := s.DB.QueryContext(ctx,
 			`SELECT asset_id, avg(value) FROM metrics
 			 WHERE tenant_id = $1 AND name = $2 AND time > now() - make_interval(secs => $3)
@@ -309,10 +417,18 @@ func (s *Server) evaluateAlerts(ctx context.Context) {
 }
 
 func (s *Server) purgeOld(ctx context.Context) {
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM metrics WHERE time < now() - make_interval(days => $1)`, s.RetentionDays); err != nil {
+	s.purgeSpans(ctx)
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM metrics m USING licenses l WHERE l.tenant_id = m.tenant_id AND m.time < now() - make_interval(days => COALESCE(NULLIF(l.retention_days, 0), $1))`, s.RetentionDays); err != nil {
 		log.Printf("eski metrik temizliği: %v", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `DELETE FROM scenario_runs WHERE at < now() - make_interval(days => $1)`, s.RetentionDays); err != nil {
+	s.dropOldPartitions(ctx)
+	s.purgeFlows(ctx)
+	s.DB.ExecContext(ctx, `DELETE FROM log_events WHERE time < now() - make_interval(days => $1)`, s.logRetention())
+	s.DB.ExecContext(ctx, `DELETE FROM asset_latest WHERE time < now() - interval '2 days'`)
+	s.DB.ExecContext(ctx, `DELETE FROM snmp_traps m USING licenses l WHERE l.tenant_id = m.tenant_id AND m.at < now() - make_interval(days => COALESCE(NULLIF(l.retention_days, 0), $1))`, s.RetentionDays)
+	s.DB.ExecContext(ctx, `DELETE FROM surface_events WHERE reviewed AND reviewed_at < now() - interval '180 days'`)
+	s.DB.ExecContext(ctx, `DELETE FROM http_endpoint_stats m USING licenses l WHERE l.tenant_id = m.tenant_id AND m.bucket < now() - make_interval(days => COALESCE(NULLIF(l.retention_days, 0), $1))`, s.RetentionDays)
+	if _, err := s.DB.ExecContext(ctx, `DELETE FROM scenario_runs m USING licenses l WHERE l.tenant_id = m.tenant_id AND m.at < now() - make_interval(days => COALESCE(NULLIF(l.retention_days, 0), $1))`, s.RetentionDays); err != nil {
 		log.Printf("eski senaryo geçmişi temizliği: %v", err)
 	}
 	// Ekran görüntüleri yalnızca her senaryonun son 10 çalıştırması için tutulur.
@@ -330,17 +446,54 @@ func (s *Server) purgeOld(ctx context.Context) {
 }
 
 // runDueScenarios zamanı gelen senaryoları çalıştırır (aynı SKIP LOCKED yaklaşımı).
-func (s *Server) runDueScenarios(ctx context.Context) {
+func (s *Server) runDueScenarios(ctx context.Context) { s.runDueScenariosN(ctx, true) }
+
+// runDueScenariosN: tarayıcı senaryoları ayrı kapasiteyle (APM_BROWSER_CONCURRENCY) çalışır; böylece uzun süren
+// tarayıcı oynatmaları HTTP senaryolarını geciktirmez. wait=false iken tur beklenmez.
+func (s *Server) runDueScenariosN(ctx context.Context, wait bool) {
+	var wg sync.WaitGroup
+	for _, browserKind := range []bool{false, true} {
+		var sem chan struct{}
+		if browserKind {
+			sem = browserSem
+		} else {
+			sem = s.sems().scen
+		}
+		free := cap(sem) - len(sem)
+		if free <= 0 {
+			continue
+		}
+		for _, sc := range s.dueScenarios(ctx, browserKind, free) {
+			wg.Add(1)
+			go func(sc scenarioRow, sem chan struct{}, isBrowser bool) {
+				defer wg.Done()
+				if !isBrowser { // tarayıcı yuvasını executeBrowser kendisi alır
+					sem <- struct{}{}
+					defer func() { <-sem }()
+				}
+				if _, ok, _, errMsg := s.executeScenario(ctx, sc, 0); !ok {
+					log.Printf("senaryo #%d (%s) başarısız: %s", sc.id, sc.name, errMsg)
+				}
+			}(sc, sem, browserKind)
+		}
+	}
+	if wait {
+		wg.Wait()
+	}
+}
+
+func (s *Server) dueScenarios(ctx context.Context, browserKind bool, limit int) []scenarioRow {
 	rows, err := s.DB.QueryContext(ctx,
 		`UPDATE scenarios SET last_run = now() WHERE id IN (
 		     SELECT id FROM scenarios
-		     WHERE enabled AND (last_run IS NULL OR last_run + make_interval(secs => interval_sec) <= now())
-		     ORDER BY last_run NULLS FIRST LIMIT 20 FOR UPDATE SKIP LOCKED)
-		 RETURNING id, tenant_id, asset_id, name, timeout_ms, verify_tls, vars, steps, kind`)
+		     WHERE enabled AND (kind = 'browser') = $2 AND tenant_id NOT IN (SELECT id FROM tenants WHERE disabled OR paused) AND (last_run IS NULL OR last_run + make_interval(secs => interval_sec) <= now())
+		     ORDER BY last_run NULLS FIRST LIMIT $1 FOR UPDATE SKIP LOCKED)
+		 RETURNING id, tenant_id, asset_id, name, timeout_ms, verify_tls, vars, steps, kind`, limit, browserKind)
 	if err != nil {
 		log.Printf("senaryo sorgusu: %v", err)
-		return
+		return nil
 	}
+	defer rows.Close()
 	var due []scenarioRow
 	for rows.Next() {
 		var sc scenarioRow
@@ -352,22 +505,12 @@ func (s *Server) runDueScenarios(ctx context.Context) {
 			log.Printf("senaryo #%d okunamadı", sc.id)
 			continue
 		}
+		if sc.kind == "browser" {
+			if q, qe := s.quotasOf(ctx, sc.tenant); qe == nil && !q.AllowBrowser {
+				continue // kiracıda tarayıcı senaryoları kapalı
+			}
+		}
 		due = append(due, sc)
 	}
-	rows.Close()
-
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5)
-	for _, sc := range due {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(sc scenarioRow) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			if _, ok, _, errMsg := s.executeScenario(ctx, sc, 0); !ok {
-				log.Printf("senaryo #%d (%s) başarısız: %s", sc.id, sc.name, errMsg)
-			}
-		}(sc)
-	}
-	wg.Wait()
+	return due
 }

@@ -4,6 +4,7 @@ import (
 	"appmon/internal/version"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,23 +23,34 @@ func (s *Server) patchAsset(w http.ResponseWriter, r *http.Request, a Auth) {
 		return
 	}
 	var req struct {
-		Kind string `json:"kind"`
+		Kind         string `json:"kind"`
+		ShowOverview *bool  `json:"show_overview"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if !validKind(req.Kind) {
+	if req.Kind == "" && req.ShowOverview == nil {
+		fail(w, 400, "kind veya show_overview gerekli")
+		return
+	}
+	if req.Kind != "" && !validKind(req.Kind) {
 		fail(w, 400, "kind geçersiz")
 		return
 	}
 	var name string
-	err := s.DB.QueryRowContext(r.Context(), `UPDATE assets SET kind = $1 WHERE id = $2 AND tenant_id = $3 RETURNING name`, req.Kind, id, a.TenantID).Scan(&name)
+	err := s.DB.QueryRowContext(r.Context(), `UPDATE assets SET kind = COALESCE(NULLIF($1, ''), kind), show_overview = COALESCE($2, show_overview) WHERE id = $3 AND tenant_id = $4 RETURNING name`,
+		req.Kind, req.ShowOverview, id, a.TenantID).Scan(&name)
 	if err != nil {
 		fail(w, 404, "asset bulunamadı")
 		return
 	}
-	s.audit(r.Context(), a.TenantID, a.Label, "asset.kind", name+" → "+req.Kind)
-	writeJSON(w, 200, map[string]any{"id": id, "kind": req.Kind})
+	if req.Kind != "" {
+		s.audit(r.Context(), a.TenantID, a.Label, "asset.kind", name+" → "+req.Kind)
+	}
+	if req.ShowOverview != nil {
+		s.audit(r.Context(), a.TenantID, a.Label, "asset.overview", fmt.Sprintf("%s → %v", name, *req.ShowOverview))
+	}
+	writeJSON(w, 200, map[string]any{"id": id, "kind": req.Kind, "overview": req.ShowOverview})
 }
 
 // GET /api/dashboard - panodaki grafikler için tek çağrıda özet veri.
@@ -100,20 +112,26 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 	// Senaryo sağlık şeritleri: her senaryonun son 30 çalıştırması.
 	scs := []map[string]any{}
 	if rows, err := s.DB.QueryContext(ctx,
-		`SELECT sc.id, sc.name, a.name, sc.kind, sc.interval_sec, sc.last_changed_at, sc.last_run, sc.last_ok, sc.last_error,
+		`SELECT sc.id, sc.name, a.name, sc.kind, sc.asset_id, sc.probe_id, sc.interval_sec, sc.last_changed_at, sc.last_run, sc.last_ok, sc.last_error,
 		        (SELECT coalesce(json_agg(json_build_object('ok', x.ok, 'ms', round(x.duration_ms::numeric, 0)) ORDER BY x.id), '[]'::json)
 		         FROM (SELECT id, ok, duration_ms FROM scenario_runs WHERE scenario_id = sc.id ORDER BY id DESC LIMIT 30) x)
 		 FROM scenarios sc JOIN assets a ON a.id = sc.asset_id WHERE sc.tenant_id = $1 ORDER BY a.name, sc.name LIMIT 12`, t); err == nil {
 		for rows.Next() {
-			var id int64
+			var id, assetID int64
+			var probeID *int64
 			var name, asset, kind string
 			var interval int
 			var changed, lastRun *time.Time
 			var lastOK *bool
 			var lastErr string
 			var runs []byte
-			if rows.Scan(&id, &name, &asset, &kind, &interval, &changed, &lastRun, &lastOK, &lastErr, &runs) == nil {
+			if rows.Scan(&id, &name, &asset, &kind, &assetID, &probeID, &interval, &changed, &lastRun, &lastOK, &lastErr, &runs) == nil {
 				it := map[string]any{"id": id, "name": name, "asset": asset, "kind": kind, "interval_sec": interval, "runs": json.RawMessage(runs), "last_error": lastErr}
+				if probeID != nil {
+					if pi := s.scenarioProbe(ctx, t, assetID, *probeID); pi != nil {
+						it["probe"] = pi
+					}
+				}
 				if changed != nil {
 					it["last_changed_at"] = *changed
 				}
@@ -149,14 +167,15 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, a Auth) {
 	// En yavaş probe hedefleri (son 1 saat ortalaması).
 	slow := []map[string]any{}
 	if rows, err := s.DB.QueryContext(ctx,
-		`SELECT a.name, a.kind, avg(m.value), max(m.value) FROM metrics m JOIN assets a ON a.id = m.asset_id
+		`SELECT a.id, a.name, a.kind, avg(m.value), max(m.value) FROM metrics m JOIN assets a ON a.id = m.asset_id
 		 WHERE m.tenant_id = $1 AND m.name = 'probe.latency_ms' AND m.time > now() - interval '1 hour'
-		 GROUP BY a.name, a.kind ORDER BY 3 DESC LIMIT 6`, t); err == nil {
+		 GROUP BY a.id, a.name, a.kind ORDER BY 4 DESC LIMIT 6`, t); err == nil {
 		for rows.Next() {
+			var aid int64
 			var name, kind string
 			var avg, mx float64
-			if rows.Scan(&name, &kind, &avg, &mx) == nil {
-				slow = append(slow, map[string]any{"asset": name, "kind": kind, "avg_ms": avg, "max_ms": mx})
+			if rows.Scan(&aid, &name, &kind, &avg, &mx) == nil {
+				slow = append(slow, map[string]any{"asset_id": aid, "asset": name, "kind": kind, "avg_ms": avg, "max_ms": mx})
 			}
 		}
 		rows.Close()
@@ -177,6 +196,12 @@ func (s *Server) settingsInfo(w http.ResponseWriter, r *http.Request, a Auth) {
 // topologyStats topoloji kutularında gösterilen asset başına özet istatistikler.
 func (s *Server) topologyStats(w http.ResponseWriter, r *http.Request, a Auth) {
 	ctx := r.Context()
+	cacheKey := "topostats|" + strconv.FormatInt(a.TenantID, 10)
+	if b, ok := s.cacheGet(cacheKey, 30*time.Second); ok { // 24 saatlik özetler ağırdır; 30 sn önbellek
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
+		return
+	}
 	out := map[string]map[string]any{}
 	get := func(id int64) map[string]any {
 		k := strconv.FormatInt(id, 10)
@@ -207,14 +232,16 @@ func (s *Server) topologyStats(w http.ResponseWriter, r *http.Request, a Auth) {
 	q(`SELECT asset_id, 'lat', avg(value), max(time) FROM metrics
 	   WHERE tenant_id = $1 AND name IN ('probe.latency_ms','scenario.duration_ms') AND time > now() - interval '1 hour' GROUP BY asset_id`,
 		func(id int64, _ string, v float64, _ time.Time) { get(id)["latency_ms"] = v })
-	q(`SELECT DISTINCT ON (asset_id, name) asset_id, name, value, time FROM metrics
-	   WHERE tenant_id = $1 AND time > now() - interval '10 minutes' AND name IN ('host.cpu_pct','host.mem_pct','host.disk_pct')
-	   ORDER BY asset_id, name, time DESC`,
+	q(`SELECT asset_id, name, value, time FROM asset_latest
+	   WHERE tenant_id = $1 AND time > now() - interval '10 minutes' AND name IN ('host.cpu_pct','host.mem_pct','host.disk_pct')`,
 		func(id int64, name string, v float64, _ time.Time) {
 			get(id)[strings.TrimSuffix(strings.TrimPrefix(name, "host."), "_pct")] = v
 		})
-	q(`SELECT asset_id, 'last', 0, max(time) FROM metrics WHERE tenant_id = $1 AND time > now() - interval '24 hours' GROUP BY asset_id`,
+	q(`SELECT id, 'last', 0, last_seen FROM assets WHERE tenant_id = $1 AND last_seen > now() - interval '24 hours'`,
 		func(id int64, _ string, _ float64, ts time.Time) { get(id)["last_seen"] = ts })
+	if b, err := json.Marshal(out); err == nil {
+		s.cacheSet(cacheKey, b)
+	}
 	writeJSON(w, 200, out)
 }
 
@@ -319,6 +346,7 @@ func (s *Server) scenarioLastChange(w http.ResponseWriter, r *http.Request, a Au
 		return
 	}
 	type stepChg struct {
+		Idx     int      `json:"idx"`
 		Name    string   `json:"name"`
 		Page    string   `json:"page,omitempty"`
 		Added   []string `json:"added"`
@@ -339,7 +367,8 @@ func (s *Server) scenarioLastChange(w http.ResponseWriter, r *http.Request, a Au
 			continue
 		}
 		var out []stepChg
-		for _, st := range steps {
+		for i, st := range steps {
+			st.Idx = i
 			if len(st.Added)+len(st.Removed) > 0 {
 				out = append(out, st)
 			}
@@ -350,4 +379,33 @@ func (s *Server) scenarioLastChange(w http.ResponseWriter, r *http.Request, a Au
 		}
 	}
 	writeJSON(w, 200, map[string]any{"name": name, "steps": []stepChg{}})
+}
+
+// scenarioProbe senaryoya bağlı probe'un hızlı durumunu verir (kartı hemen boyamak için).
+// "fresh": probe son 3 aralık içinde çalışmış; "maint": asset şu an bakım penceresinde.
+func (s *Server) scenarioProbe(ctx context.Context, tenant, asset, probeID int64) map[string]any {
+	var typ, target string
+	var pAsset int64
+	var interval, streak int
+	var enabled bool
+	var lastOK *bool
+	var lastRun *time.Time
+	var errMsg string
+	if err := s.DB.QueryRowContext(ctx, `SELECT asset_id, type, target, interval_sec, enabled, last_ok, last_run, fail_streak, last_error FROM probes WHERE id = $1 AND tenant_id = $2`,
+		probeID, tenant).Scan(&pAsset, &typ, &target, &interval, &enabled, &lastOK, &lastRun, &streak, &errMsg); err != nil {
+		return nil
+	}
+	pi := map[string]any{"id": probeID, "type": typ, "target": maskTarget(typ, target), "interval_sec": interval, "enabled": enabled, "fail_streak": streak}
+	if lastOK != nil {
+		pi["ok"] = *lastOK
+	}
+	if lastRun != nil {
+		pi["last_run"] = *lastRun
+		pi["fresh"] = enabled && time.Since(*lastRun) < 3*time.Duration(interval)*time.Second+10*time.Second
+	}
+	if errMsg != "" && lastOK != nil && !*lastOK {
+		pi["error"] = errMsg
+	}
+	pi["maint"] = s.inMaintenance(ctx, tenant, asset) || (pAsset != asset && s.inMaintenance(ctx, tenant, pAsset))
+	return pi
 }

@@ -2,7 +2,8 @@
 # APP_MON - kurulu sistemi YENI SURUME guncelle (internetsiz / kapali ag). Veri ve ayarlar korunur.
 #   sudo ./guncelle-apache.sh                      yedek al, yeni surumu yukle, yeniden baslat, saglik kontrolu yap
 #   sudo ./guncelle-apache.sh --yedeksiz           veritabani yedegini atla (onerilmez)
-#   sudo ./guncelle-apache.sh --geri-al            bir onceki ikili dosyaya don (veritabani yedegi elle geri yuklenir)
+#   sudo ./guncelle-apache.sh --geri-al            bir onceki ikili dosyaya don (veritabani yedegi elle geri yuklenir);
+#                                                  arayuzde Guncelleme > "Onceki surume don" ayni islemi yapar
 #   sudo ./guncelle-apache.sh --imza-anahtari k.pem  paket imzasi dogrulamasini ac (Ed25519 genel anahtar)
 # Bu betik ayrica "arayuzden guncelleme" hizmetini kurar (systemd yol birimi); sonraki guncellemeler
 # APP_MON arayuzunde Guncelleme sayfasindan paket yuklenerek yapilabilir.
@@ -48,10 +49,13 @@ if [ "$FROM_UI" = 1 ]; then
   REQ_RUN="$REQ.run"; mv -f "$REQ" "$REQ_RUN"       # yol birimi tekrar tetiklenmesin
   ID="$(sed -n 's/.*"id": *"\([0-9a-f]\{16\}\)".*/\1/p' "$REQ_RUN" | head -1)"
   STATUS_FILE="$UPD/status.json"
+  if grep -q '"action": *"rollback"' "$REQ_RUN"; then ROLLBACK=1; ID=""; fi
+  if [ "$ROLLBACK" = 1 ]; then :; else
   [ -n "$ID" ] && [ -d "$UPD/staged-$ID" ] || die "Gecersiz guncelleme istegi veya hazirlanmis paket yok."
   PKG_DIR="$UPD/staged-$ID"; cd "$PKG_DIR"
   NEWVER="$(cat SURUM 2>/dev/null || true)"
   status_write running "Guncelleme basladi"
+  fi
 fi
 
 [ "${APM_TEST:-0}" = 1 ] || [ "$(id -u)" -eq 0 ] || die "root olarak calistirin: sudo ./guncelle-apache.sh"
@@ -66,9 +70,20 @@ wait_health() { local i out; for i in $(seq 1 "${APM_WAIT:-40}"); do out="$(heal
 if [ "$ROLLBACK" = 1 ]; then
   [ -x "$APP_DIR/bin/appmon-server.prev" ] || die "Onceki surum bulunamadi ($APP_DIR/bin/appmon-server.prev)."
   say "Onceki surume donuluyor"
+  [ -n "$STATUS_FILE" ] || { [ -d "$UPD" ] && STATUS_FILE="$UPD/status.json"; } || true
+  OLDVER="$(health | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"; OLDVER="${OLDVER:-bilinmiyor}"
+  NEWVER="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$UPD/prev.json" 2>/dev/null | head -1)"; NEWVER="${NEWVER:-onceki surum}"
+  status_write running "Onceki surume donuluyor"
+  cp -p "$APP_DIR/bin/appmon-server" "$APP_DIR/bin/appmon-server.bad"
   mv -f "$APP_DIR/bin/appmon-server.prev" "$APP_DIR/bin/appmon-server"
   systemctl restart appmon
-  wait_health >/dev/null || { journalctl -u appmon -n 20 --no-pager || true; die "Servis acilmadi."; }
+  if ! wait_health >/dev/null; then
+    journalctl -u appmon -n 20 --no-pager || true
+    mv -f "$APP_DIR/bin/appmon-server.bad" "$APP_DIR/bin/appmon-server"; systemctl restart appmon || true
+    die "Onceki surum acilmadi; mevcut surum geri yuklendi."
+  fi
+  rm -f "$APP_DIR/bin/appmon-server.bad" "$UPD/prev.json"
+  status_write reverted "Onceki surume donuldu ($NEWVER). Veritabani degismedi."
   say "Geri donuldu. (Veritabani degismedi; gerekirse $BACKUP_DIR icindeki yedegi elle geri yukleyin.)"; exit 0
 fi
 
@@ -150,6 +165,7 @@ Unit=appmon-update.service
 [Install]
 WantedBy=multi-user.target
 UNIT
+  grep -q '^APM_AGENT_DIR=' "$ENV_FILE" || echo "APM_AGENT_DIR=$APP_DIR/dist" >> "$ENV_FILE"
   grep -q '^APM_UPDATE_DIR=' "$ENV_FILE" || echo "APM_UPDATE_DIR=$UPD" >> "$ENV_FILE"
   if [ -f "$PUBKEY" ] && ! grep -q '^APM_UPDATE_PUBKEY=' "$ENV_FILE"; then echo "APM_UPDATE_PUBKEY=$PUBKEY" >> "$ENV_FILE"; fi
   : > "$UPD/READY"; [ -z "$OWN_APP" ] || chown appmon:appmon "$UPD/READY"
@@ -159,15 +175,33 @@ UNIT
   have restorecon && restorecon -R "$SBIN/appmon-guncelle" "$UPD" 2>/dev/null || true
 }
 [ "$FROM_UI" = 1 ] || install_updater
+# --- 2b) Kasa ana anahtari (v1.7.0+): yoksa olustur. Sunucu, anahtar bulamazsa kendisi de uretir
+#         ($UPD/master.key); asil amac anahtarin veritabani yedeginden ayri bir dosyada durmasidir.
+ensure_master_key() {
+  local k=/etc/appmon/master.key
+  if [ -f "$k" ]; then return 0; fi
+  if [ -f "$UPD/master.key" ]; then warn "Kasa ana anahtari $UPD/master.key icinde; yedeklemeyi unutmayin."; return 0; fi
+  if ! grep -q '^APM_MASTER_KEY' "$ENV_FILE" 2>/dev/null; then
+    say "Kasa ana anahtari olusturuluyor ($k)"
+    install -d -m 750 $OWN_ROOT_APP "$(dirname "$k")" 2>/dev/null || true
+    ( umask 077; if have openssl; then openssl rand -hex 32; else head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; fi > "$k" )
+    chown root:appmon "$k" 2>/dev/null || true; chmod 640 "$k"
+    warn "$k dosyasini guvenli bir yere YEDEKLEYIN: kaybolursa kasadaki degerler geri alinamaz."
+  fi
+}
+[ "$FROM_UI" = 1 ] || ensure_master_key
+have ssh || warn "ssh istemcisi yok: 'SSH ile sunucu izleme' icin openssh-clients kurun (dnf install openssh-clients)."
+
 
 # --- 3) Ikili dosyalari degistir ---
 say "Yeni surum yukleniyor"
 status_write running "Yeni surum yukleniyor"
 install -d -m 755 "$APP_DIR/bin" "$APP_DIR/dist"
 cp -p "$APP_DIR/bin/appmon-server" "$APP_DIR/bin/appmon-server.prev"
+[ -d "$UPD" ] && printf '{"version":"%s","time":"%s","backup":"%s"}\n' "$(jesc "$OLDVER")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(jesc "$OUT")" > "$UPD/prev.json" && chmod 644 "$UPD/prev.json" || true
 install -m 755 "$NEW" "$APP_DIR/bin/appmon-server.new"
 mv -f "$APP_DIR/bin/appmon-server.new" "$APP_DIR/bin/appmon-server"
-for a in bin/appmon-agent-linux-*; do [ -e "$a" ] && install -m 755 "$a" "$APP_DIR/dist/$(basename "$a")"; done
+for a in bin/appmon-agent-*; do [ -e "$a" ] && install -m 755 "$a" "$APP_DIR/dist/$(basename "$a")"; done
 have restorecon && restorecon -R "$APP_DIR" 2>/dev/null || true
 
 # --- 4) Yeniden baslat ve dogrula ---
@@ -186,6 +220,7 @@ else
   warn "Yeni surum saglik kontrolunden gecemedi; onceki surume donuluyor."
   journalctl -u appmon -n 25 --no-pager 2>/dev/null || true
   mv -f "$APP_DIR/bin/appmon-server.prev" "$APP_DIR/bin/appmon-server"
+  rm -f "$UPD/prev.json"
   systemctl restart appmon
   if wait_health >/dev/null; then
     status_write rolled_back "Yeni surum acilmadi; onceki surum geri yuklendi ve calisiyor. Gunluk: journalctl -u appmon"

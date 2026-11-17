@@ -13,7 +13,7 @@ for a in "$@"; do case "$a" in --ssl) SSL=1;; --no-chrome) CHROME=0;; --no-pg) P
 HAVE_DOCKER=0; command -v docker >/dev/null 2>&1 && HAVE_DOCKER=1
 if [ "$HAVE_DOCKER" = 0 ] && ! command -v dnf >/dev/null 2>&1; then echo "Docker veya dnf (RHEL/Rocky/Alma) gerekli."; exit 1; fi
 mkdir -p paketler
-PKGS="curl openssl policycoreutils fontconfig dejavu-sans-fonts liberation-sans-fonts liberation-mono-fonts"
+PKGS="curl openssl openssh-clients policycoreutils fontconfig dejavu-sans-fonts liberation-sans-fonts liberation-mono-fonts"
 [ "$PG" = 1 ] && PKGS="$PKGS postgresql-server postgresql"
 [ "$SSL" = 1 ] && PKGS="$PKGS mod_ssl"
 CHROME_STEP=""

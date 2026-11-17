@@ -170,3 +170,24 @@ func TestCompare(t *testing.T) {
 		}
 	}
 }
+
+func TestRollbackRequest(t *testing.T) {
+	d := t.TempDir()
+	if err := RequestRollback(d, "x"); err == nil {
+		t.Fatal("prev.json yokken geri dönüş istenebildi")
+	}
+	os.WriteFile(filepath.Join(d, "prev.json"), []byte(`{"version":"v2.0.0","backup":"/b/x.gz"}`), 0o640)
+	if p := ReadPrev(d); p == nil || p.Version != "v2.0.0" {
+		t.Fatalf("ReadPrev: %+v", p)
+	}
+	if err := RequestRollback(d, "x"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(d, "apply.json"))
+	if !strings.Contains(string(b), `"action":"rollback"`) {
+		t.Fatalf("apply.json: %s", b)
+	}
+	if err := RequestRollback(d, "x"); err == nil {
+		t.Fatal("ikinci istek reddedilmeliydi")
+	}
+}

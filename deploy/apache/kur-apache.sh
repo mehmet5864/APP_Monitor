@@ -246,7 +246,7 @@ run install -d -o root -g root -m 755 "$APP_DIR" "$APP_DIR/bin" "$APP_DIR/dist"
 run install -d -o root -g "$APP_USER" -m 750 /etc/appmon
 run install -m 755 "bin/appmon-server-linux-$GOARCH" "$APP_DIR/bin/appmon-server.new"
 run mv -f "$APP_DIR/bin/appmon-server.new" "$APP_DIR/bin/appmon-server"
-for a in bin/appmon-agent-linux-*; do [ -e "$a" ] && run install -m 755 "$a" "$APP_DIR/dist/$(basename "$a")"; done
+for a in bin/appmon-agent-*; do [ -e "$a" ] && run install -m 755 "$a" "$APP_DIR/dist/$(basename "$a")"; done
 
 ADMIN_KEY=""
 if [ "$ENV_EXISTS" = 0 ]; then
@@ -260,6 +260,7 @@ APM_ADMIN_KEY=$ADMIN_KEY
 APM_MODE=onprem
 APM_ADDR=127.0.0.1:$INTERNAL_PORT
 APM_ASSET_LIMIT=$ASSET_LIMIT
+APM_AGENT_DIR=$APP_DIR/dist
 APM_RETENTION_DAYS=14
 APM_BROWSER_ENABLED=$([ -n "$CHROME" ] && echo true || echo false)
 APM_CHROME_PATH=$CHROME
@@ -271,6 +272,19 @@ else
   say "Mevcut ayarlar korundu ($ENV_FILE)"
   INTERNAL_PORT="$(grep -E '^APM_ADDR=' "$ENV_FILE" | sed 's/.*://' || echo "$INTERNAL_PORT")"; INTERNAL_PORT="${INTERNAL_PORT:-18080}"
 fi
+
+# --- Kasa (yerlesik gizli deger deposu): ana anahtar veritabaninin DISINDA durur ---
+KEYF=/etc/appmon/master.key
+if [ -f "$KEYF" ] || [ -f /var/lib/appmon/updates/master.key ]; then
+  say "Kasa ana anahtari mevcut, korundu"
+else
+  say "Kasa ana anahtari olusturuluyor ($KEYF)"
+  if [ "$DRY" = 1 ]; then echo "  + $KEYF"; else
+    ( umask 077; rand 32 > "$KEYF" ); chown root:"$APP_USER" "$KEYF"; chmod 640 "$KEYF"
+  fi
+  warn "$KEYF dosyasini guvenli bir yere YEDEKLEYIN: kaybolursa kasadaki (SSH anahtari vb.) degerler geri alinamaz."
+fi
+have ssh || warn "ssh istemcisi yok: 'SSH ile sunucu izleme' icin openssh-clients kurun (dnf install openssh-clients)."
 
 # --- systemd ---
 say "systemd servisi"

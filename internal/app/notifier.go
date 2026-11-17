@@ -3,9 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -48,21 +46,13 @@ func (s *Server) publicLink() string {
 // dispatchAlert alarm açıldığında/düzeldiğinde uygun kanallara bildirim gönderir (arka planda).
 func (s *Server) dispatchAlert(tenant int64, event string, asset int64, rule, sev string, val, thr float64, cmp string) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		var assetName string
 		if s.DB.QueryRowContext(ctx, `SELECT name FROM assets WHERE id = $1`, asset).Scan(&assetName) != nil {
 			return
 		}
-		subject := rule + " — " + assetName
-		text := fmt.Sprintf("%s hizmetinde \"%s\" alarmı açıldı.", assetName, rule)
-		if event == "resolved" {
-			text = fmt.Sprintf("%s hizmetindeki \"%s\" alarmı düzeldi.", assetName, rule)
-			subject = rule + " düzeldi — " + assetName
-		}
-		m := notify.Message{Event: event, Severity: sev, Subject: subject, Text: text, Asset: assetName, Rule: rule,
-			Value: fmt.Sprintf("%s (%s %s)", strconv.FormatFloat(val, 'f', -1, 64), cmp, strconv.FormatFloat(thr, 'f', -1, 64)), When: time.Now(), Link: s.publicLink()}
-		s.sendToChannels(ctx, tenant, m, event == "resolved")
+		s.queueNotify(tenant, event, rule, sev, assetName, val, thr, cmp)
 	}()
 }
 

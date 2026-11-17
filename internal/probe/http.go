@@ -9,10 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -134,7 +136,68 @@ type HTTPRequest struct {
 	Body         string
 	ExpectStatus string
 	ExpectText   string
-	NeedBody     bool // değişken çıkarma için gövdeyi saklar
+	NeedBody     bool        // değişken çıkarma için gövdeyi saklar
+	Trace        *HTTPTiming // doluysa DNS/TCP/TLS/ilk bayt süreleri kaydedilir
+}
+
+// HTTPTiming bir HTTP isteğinin aşamalarını ölçer (httptrace). Yönlendirmelerde DNS/TCP/TLS toplanır;
+// ilk bayt ve indirme süresi son isteğe aittir.
+type HTTPTiming struct {
+	mu                   sync.Mutex
+	dns, connect, tls    time.Duration
+	dnsAt, connAt, tlsAt time.Time
+	wrote, first         time.Time
+	got                  bool
+}
+
+func (t *HTTPTiming) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) { t.mu.Lock(); t.dnsAt = time.Now(); t.mu.Unlock() },
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			t.mu.Lock()
+			if !t.dnsAt.IsZero() {
+				t.dns += time.Since(t.dnsAt)
+			}
+			t.mu.Unlock()
+		},
+		ConnectStart: func(_, _ string) { t.mu.Lock(); t.connAt = time.Now(); t.mu.Unlock() },
+		ConnectDone: func(_, _ string, _ error) {
+			t.mu.Lock()
+			if !t.connAt.IsZero() {
+				t.connect += time.Since(t.connAt)
+			}
+			t.mu.Unlock()
+		},
+		TLSHandshakeStart: func() { t.mu.Lock(); t.tlsAt = time.Now(); t.mu.Unlock() },
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			t.mu.Lock()
+			if !t.tlsAt.IsZero() {
+				t.tls += time.Since(t.tlsAt)
+			}
+			t.mu.Unlock()
+		},
+		WroteRequest:         func(httptrace.WroteRequestInfo) { t.mu.Lock(); t.wrote = time.Now(); t.mu.Unlock() },
+		GotFirstResponseByte: func() { t.mu.Lock(); t.first = time.Now(); t.got = true; t.mu.Unlock() },
+	}
+}
+
+// Millis aşamaları milisaniye olarak döndürür (yanıt hiç alınmadıysa nil). total, isteğin toplam süresidir.
+func (t *HTTPTiming) Millis(total time.Duration) map[string]float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.got {
+		return nil
+	}
+	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+	ttfb := time.Duration(0)
+	if !t.wrote.IsZero() && t.first.After(t.wrote) {
+		ttfb = t.first.Sub(t.wrote)
+	}
+	transfer := total - t.dns - t.connect - t.tls - ttfb
+	if transfer < 0 {
+		transfer = 0
+	}
+	return map[string]float64{"dns": ms(t.dns), "connect": ms(t.connect), "tls": ms(t.tls), "ttfb": ms(ttfb), "transfer": ms(transfer), "total": ms(total)}
 }
 
 type HTTPResponse struct {
@@ -142,6 +205,8 @@ type HTTPResponse struct {
 	Header   http.Header
 	Body     []byte
 	Duration time.Duration
+	TLS      string // "TLS 1.2" gibi; TLS kullanılmadıysa boş
+	Proto    string // "HTTP/1.1", "HTTP/2.0"
 }
 
 // DoHTTP isteği gönderir, durum kodunu ve (varsa) yanıt metnini doğrular.
@@ -155,6 +220,9 @@ func DoHTTP(ctx context.Context, client *http.Client, r HTTPRequest) (HTTPRespon
 	req, err := http.NewRequestWithContext(ctx, r.Method, r.URL, body)
 	if err != nil {
 		return res, errors.New("geçersiz istek adresi")
+	}
+	if r.Trace != nil {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), r.Trace.clientTrace()))
 	}
 	req.Header.Set("User-Agent", "APP_MON-probe/1.0")
 	for k, v := range r.Headers {
@@ -179,6 +247,8 @@ func DoHTTP(ctx context.Context, client *http.Client, r HTTPRequest) (HTTPRespon
 	}
 	res.Duration = time.Since(start)
 	res.Status, res.Header, res.Body = resp.StatusCode, resp.Header, data
+	res.TLS = tlsName(resp)
+	res.Proto = resp.Proto
 
 	if !StatusMatches(r.ExpectStatus, resp.StatusCode) {
 		return res, fmt.Errorf("beklenmeyen HTTP durum kodu %d (beklenen: %s)", resp.StatusCode, specText(r.ExpectStatus))
@@ -187,4 +257,46 @@ func DoHTTP(ctx context.Context, client *http.Client, r HTTPRequest) (HTTPRespon
 		return res, errors.New("yanıtta beklenen metin bulunamadı")
 	}
 	return res, nil
+}
+
+func tlsName(resp *http.Response) string {
+	if resp.TLS == nil {
+		return ""
+	}
+	switch resp.TLS.Version {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	}
+	return "TLS ?"
+}
+
+// HTTPSurface bir HTTP yanıtından çıkarılan, saldırı yüzeyini ilgilendiren özelliklerdir.
+type HTTPSurface struct {
+	TLS     string   // "TLS 1.3"; boşsa TLS yok
+	Headers []string // mevcut güvenlik başlıkları (küçük harf)
+	Banner  string   // Server başlığı (en çok 80 karakter)
+}
+
+var secHeaders = []string{"Strict-Transport-Security", "Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy"}
+
+// SurfaceOf yanıttan HTTPSurface üretir.
+func SurfaceOf(r HTTPResponse) HTTPSurface {
+	s := HTTPSurface{TLS: r.TLS}
+	for _, h := range secHeaders {
+		if r.Header.Get(h) != "" {
+			s.Headers = append(s.Headers, strings.ToLower(h))
+		}
+	}
+	b := strings.TrimSpace(r.Header.Get("Server"))
+	if len(b) > 80 {
+		b = b[:80]
+	}
+	s.Banner = b
+	return s
 }

@@ -16,14 +16,17 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
+// MaxOpen havuzdaki en çok bağlantı sayısı (Open'dan önce ayarlanır).
+var MaxOpen = 20
+
 // Open veritabanına bağlanır; Docker'da PostgreSQL geç ayağa kalkabileceği için yeniden dener.
 func Open(dsn string) (*sql.DB, error) {
 	d, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
 	}
-	d.SetMaxOpenConns(20)
-	d.SetMaxIdleConns(5)
+	d.SetMaxOpenConns(MaxOpen)
+	d.SetMaxIdleConns(MaxOpen / 4)
 	d.SetConnMaxLifetime(30 * time.Minute)
 	var last error
 	for i := 1; i <= 30; i++ {

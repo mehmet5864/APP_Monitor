@@ -52,6 +52,7 @@ func icmpProbe(ctx context.Context, spec Spec, block bool) (time.Duration, map[s
 	deadline, hasDL := ctx.Deadline()
 	var total time.Duration
 	got := 0
+	var minR, maxR time.Duration
 	buf := make([]byte, 1500)
 	for seq := 1; seq <= count; seq++ {
 		if ctx.Err() != nil {
@@ -79,7 +80,14 @@ func icmpProbe(ctx context.Context, spec Spec, block bool) (time.Duration, map[s
 			}
 			if n >= 8 && buf[0] == 0 && binary.BigEndian.Uint16(buf[6:]) == uint16(seq) &&
 				(dgram || binary.BigEndian.Uint16(buf[4:]) == id) {
-				total += time.Since(sent)
+				rt := time.Since(sent)
+				total += rt
+				if got == 0 || rt < minR {
+					minR = rt
+				}
+				if rt > maxR {
+					maxR = rt
+				}
 				got++
 				break
 			}
@@ -92,6 +100,13 @@ func icmpProbe(ctx context.Context, spec Spec, block bool) (time.Duration, map[s
 		}
 	}
 	loss := float64(count-got) / float64(count) * 100
+	spec.Det.Add("Çözümlenen adres", ip.String())
+	spec.Det.Add("Gönderilen / alınan paket", fmt.Sprintf("%d / %d", count, got))
+	spec.Det.Add("Paket kaybı", fmt.Sprintf("%.0f%%", loss))
+	if got > 0 {
+		ms := func(d time.Duration) string { return fmt.Sprintf("%.2f ms", float64(d.Microseconds())/1000) }
+		spec.Det.Add("Gecikme (en az / ortalama / en çok)", ms(minR)+" / "+ms(total/time.Duration(got))+" / "+ms(maxR))
+	}
 	if got == 0 {
 		return 0, map[string]float64{"packet_loss_pct": 100}, fmt.Errorf("ICMP yanıtı yok (%d/%d paket kayıp)", count, count)
 	}

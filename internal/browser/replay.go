@@ -37,6 +37,7 @@ type Result struct {
 	Duration    time.Duration
 	Cookies     []Cookie // başarılı çalıştırma sonunda tarayıcıdaki oturum
 	LoginFailed bool     // kimlik bilgileri gönderildi ama giriş tamamlanamadı (parola hatalı olabilir)
+	BotBlocked  bool     // site bot koruması engel sayfası gösterdi
 	Session     string   // "", "reused" (saklanan oturum geçerliydi) veya "login" (giriş yapıldı)
 }
 
@@ -118,7 +119,18 @@ func Replay(ctx context.Context, steps []Step, vars map[string]string, o Options
 		r.MS = float64(elapsed.Microseconds()) / 1000
 		r.Page = shortURL(page.URL())
 		if p := page.docProblem(); p != "" {
+			txt, _ := page.BodyText(ctx)
+			if bb := BotBlocked(page.Title(ctx), txt, page.docStatusCode()); bb != "" {
+				res.BotBlocked = true
+				return fail(bb)
+			}
 			return fail(p)
+		}
+		if txt, _ := page.BodyText(ctx); txt != "" {
+			if bb := BotBlocked(page.Title(ctx), txt, 0); bb != "" {
+				res.BotBlocked = true
+				return fail(bb)
+			}
 		}
 		if st.ExpectText != "" {
 			txt, _ := page.BodyText(ctx)
@@ -226,4 +238,12 @@ func authenticate(ctx context.Context, page *Page, steps []Step, vars map[string
 	}
 	res.Steps = append(res.Steps, r)
 	return nil
+}
+
+// Authenticate tek başına oturum denetimi/girişi yapar (keşif gibi adım oynatmayan işler için).
+// Sonuçtaki LoginFailed/Session alanları çağıran tarafından hesap kilidi sayaçları için kullanılır.
+func Authenticate(ctx context.Context, page *Page, steps []Step, vars map[string]string, o Options) (Result, error) {
+	var res Result
+	err := authenticate(ctx, page, steps, vars, o, &res)
+	return res, err
 }

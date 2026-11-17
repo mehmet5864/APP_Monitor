@@ -1,11 +1,2 @@
+// Bu dosya v1.7.0 ile bosaltildi: SSH olcumu ssh.go icindedir (eski kopyalarin uzerine yazmada derleme hatasi olmasin diye dosya korunur).
 package probe
-
-import (
-	"context"
-	"errors"
-	"net"
-)
-
-func sshHostProbe(ctx context.Context, d *net.Dialer, spec Spec, block bool) (map[string]float64, error) {
-	return nil, errors.New("SSH ile ölçüm bu sürümde etkin değil")
-}

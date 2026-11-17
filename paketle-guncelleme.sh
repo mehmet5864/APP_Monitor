@@ -31,9 +31,11 @@ LD="-s -w -X appmon/internal/version.Version=$VER"
 for A in amd64 arm64; do
   CGO_ENABLED=0 GOOS=linux GOARCH=$A go build -trimpath -ldflags="$LD" -o "$OUT/bin/appmon-server-linux-$A" ./cmd/server
   CGO_ENABLED=0 GOOS=linux GOARCH=$A go build -trimpath -ldflags="-s -w" -o "$OUT/bin/appmon-agent-linux-$A" ./cmd/agent
+  CGO_ENABLED=0 GOOS=windows GOARCH=$A go build -trimpath -ldflags="-s -w" -o "$OUT/bin/appmon-agent-windows-$A.exe" ./cmd/agent
 done
 cp deploy/apache/guncelle-apache.sh "$OUT/"; chmod +x "$OUT/guncelle-apache.sh"
 cp deploy/apache/OKU-GUNCELLEME.txt KULLANIM-KILAVUZU.md "$OUT/"
+mkdir -p "$OUT/agent-config"; cp deploy/agent/*.conf "$OUT/agent-config/"   # ajan ornek yapilandirma dosyalari (Linux: appmon-agent.conf, Windows: agent.conf)
 echo "$VER" > "$OUT/SURUM"
 (cd "$OUT" && sha256sum bin/* > SHA256SUMS)
 # manifest.json (arayuzden yukleme icin): surum + dosya sagiama toplamlari

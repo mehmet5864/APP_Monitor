@@ -1,4 +1,4 @@
-// Ayarlar > Raporlar: ön tanımlı, önizlemeli ve yazdırılabilir (PDF) raporlar. Tüm veri mevcut API uçlarından gelir.
+// Alarm ve raporlar > Raporlar: ön tanımlı, önizlemeli ve yazdırılabilir (PDF) raporlar. Tüm veri mevcut API uçlarından gelir.
 (() => {
   'use strict';
   const A = () => window.APM;
@@ -16,7 +16,7 @@
 
   // ---- ortak yapı taşları ----
   const pctTxt = (v) => (v == null ? '—' : (v >= 99.95 ? v.toFixed(1) : v.toFixed(2)) + '%');
-  const dt = (d) => d.toLocaleString('tr-TR', { dateStyle: 'long', timeStyle: 'short' });
+  const dt = (d) => d.toLocaleString((window.LOCALE || 'tr-TR'), { dateStyle: 'long', timeStyle: 'short' });
   const count = (arr, fn) => { const m = {}; for (const x of arr) { const k = fn(x); m[k] = (m[k] || 0) + 1; } return Object.entries(m).sort((a, b) => b[1] - a[1]); };
   const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
   const kindOf = (k) => (k === 'url' ? 'website' : k);
@@ -191,6 +191,217 @@
       } },
   ];
 
+
+  // ================= Bölüm kayıt sistemi, oluşturucu, şablonlar, dışa aktarma =================
+  const LAST = { data: null, title: '' };
+  const RANGES = [['24h', 'Son 24 saat', 1], ['7d', 'Son 7 gün', 7], ['30d', 'Son 30 gün', 30]];
+  const rangeDays = (r) => (RANGES.find((x) => x[0] === r) || RANGES[0])[2];
+  const rangeLabel = (r) => (RANGES.find((x) => x[0] === r) || RANGES[0])[1];
+  const perfWin = (r) => (r === '24h' ? '24h' : '7d');
+  const pms = (v) => (v == null ? '—' : v >= 1000 ? (v / 1000).toFixed(2) + ' sn' : Math.round(v) + ' ms');
+
+  // Seçilen kapsam (grup) ve tarih aralığına göre veriyi süzer; önceki dönem için ayrıca ayırır.
+  function scoped(d, o) {
+    const day = 864e5, days = rangeDays(o.range), now = Date.now();
+    const assets = o.group ? d.assets.filter((a) => a.group === o.group) : d.assets;
+    const names = new Set(assets.map((a) => a.name)), ids = new Set(assets.map((a) => a.id));
+    const inScope = (x) => !o.group || names.has(x.asset);
+    const all = d.open.concat(d.resolved).filter(inScope);
+    const inR = (a, from, to) => { const t = new Date(a.opened_at).getTime(); return t >= from && t < to; };
+    const cur = all.filter((a) => inR(a, now - days * day, now + 1)), prev = all.filter((a) => inR(a, now - 2 * days * day, now - days * day));
+    return { ...d, assets, ids, open: d.open.filter(inScope), probes: d.probes.filter(inScope), scens: d.scens.filter(inScope),
+      alertsIn: cur, alertsPrev: prev, days, range: o.range, group: o.group || '' };
+  }
+  const delta = (cur, prev) => {
+    if (!prev) return cur ? `önceki dönemde 0` : 'değişim yok';
+    const p = Math.round((cur - prev) / prev * 100);
+    return `önceki dönem ${prev} (${p > 0 ? '+' : ''}${p}%)`;
+  };
+
+  async function loadExtra(d, o) {
+    const { api } = A();
+    const safe = (p, v) => api(p).catch(() => v);
+    const [perf, queries, surf, agents] = await Promise.all([
+      safe('/api/perf/apps?window=' + perfWin(o.range), { apps: [] }), safe('/api/perf/queries', { queries: [] }),
+      safe('/api/surface/events?state=all', { events: [], open: 0, critical: 0 }), safe('/api/agent/summary', null)]);
+    return { ...d, perf, queries, surf, agents };
+  }
+
+  const SECTIONS = {
+    summary: { title: 'Genel özet', build(d) {
+      const { kpi } = A();
+      const mt = mttr(d.alertsIn.filter((a) => a.resolved_at)), mp = mttr(d.alertsPrev.filter((a) => a.resolved_at));
+      const up = d.assets.filter((a) => a.status === 'up').length;
+      return sec('Genel özet ' + (d.group ? `· ${d.group}` : ''), kpis(
+        kpi('Çalışan varlık', `${up} / ${d.assets.length}`, d.group ? 'seçili grup' : 'izlenen toplam', null, up < d.assets.length ? 'warn' : ''),
+        kpi('Alarm (dönem)', String(d.alertsIn.length), delta(d.alertsIn.length, d.alertsPrev.length), null, d.alertsIn.length > d.alertsPrev.length ? 'warn' : ''),
+        kpi('Açık alarm', String(d.open.length), `${d.open.filter((a) => a.severity === 'critical').length} kritik`, null, d.open.some((a) => a.severity === 'critical') ? 'bad' : ''),
+        kpi('Ort. çözülme (MTTR)', durTxt(mt), mp != null ? `önceki dönem ${durTxt(mp)}` : rangeLabel(d.range), null, '')));
+    } },
+    inventory: { title: 'Envanter dağılımı', build(d) {
+      const { KIND } = A();
+      return sec('Envanter dağılımı', cols(card('Duruma göre', donut(statusParts(d.assets), d.assets.length, 'varlık')),
+        card('Türe göre', bars(count(d.assets, (a) => KIND[kindOf(a.kind)] || a.kind), '', null))));
+    } },
+    availability: { title: 'Erişilebilirlik', build(d) {
+      const { h } = A();
+      const av = d.assets.filter((a) => a.status !== 'offline').map((a) => [a.name, (d.stats[a.id] || {}).avail_24h, a.kind]).filter((x) => x[1] != null).sort((a, b) => a[1] - b[1]).slice(0, 10);
+      return sec('Erişilebilirlik (en düşük 10, 24 saat)', av.length ? bars(av.map(([n, v, k]) => [n, Number(v.toFixed(2)), k]), '%', (k) => k) : h('p', { class: 'muted' }, 'Veri yok.'));
+    } },
+    alerts: { title: 'Alarmlar ve eğilim', build(d) {
+      const { h, table, pill, SEV, ago } = A();
+      const byRule = count(d.alertsIn, (a) => a.rule).slice(0, 8), byAsset = count(d.alertsIn, (a) => a.asset).slice(0, 8);
+      return sec(`Alarmlar · ${rangeLabel(d.range)}`, h('p', { class: 'muted small' }, `Dönemde ${d.alertsIn.length} alarm açıldı; ${delta(d.alertsIn.length, d.alertsPrev.length)}.`),
+        cols(card('Önem dağılımı', donut(sevParts(d.alertsIn), d.alertsIn.length, 'alarm')), card('En çok tetiklenen kurallar', byRule.length ? bars(byRule, '') : h('p', { class: 'muted' }, 'Alarm yok.'))),
+        card('En çok alarm üreten varlıklar', byAsset.length ? bars(byAsset, '') : h('p', { class: 'muted' }, 'Alarm yok.')),
+        table(['Önem', 'Kural', 'Asset', 'Açılış', 'Durum'], d.alertsIn.slice(0, 15).map((a) => h('tr', null, h('td', null, pill(a.severity, SEV[a.severity])), h('td', null, a.rule), h('td', null, a.asset), h('td', { class: 'mono small' }, ago(a.opened_at)), h('td', null, a.resolved_at ? 'Kapandı' : 'Açık'))), 'Dönemde alarm yok.'));
+    } },
+    perf: { title: 'Uygulama performansı', build(d) {
+      const { h, table, fmt } = A();
+      const apps = (d.perf && d.perf.apps) || [];
+      const p95 = apps.filter((a) => a.p95_ms != null).sort((a, b) => b.p95_ms - a.p95_ms).slice(0, 8);
+      return sec(`Uygulama performansı · ${rangeLabel(d.range === '24h' ? '24h' : '7d')}`, apps.length ? cols(
+        card('En yavaş uygulamalar (p95)', bars(p95.map((a) => [a.app, Number(a.p95_ms.toFixed(0)), 'service']), ' ms', (k) => k)),
+        card('Hata oranı (5xx)', bars(apps.filter((a) => a.err_pct != null).sort((a, b) => b.err_pct - a.err_pct).slice(0, 8).map((a) => [a.app, Number(a.err_pct.toFixed(2)), 'service']), '%', (k) => k))) : h('p', { class: 'muted' }, 'Uygulama performans verisi yok (erişim günlüğü, ajan veya trace gerekir).'),
+        apps.length ? table(['Uygulama', 'İstek/dk', 'Hata (5xx)', 'p50', 'p95', 'p99'], apps.map((a) => h('tr', null, h('td', null, h('b', null, a.app)), h('td', { class: 'mono' }, fmt(a.req_per_min)),
+          h('td', { class: 'mono' }, a.err_pct == null ? '—' : a.err_pct.toFixed(2) + '%'), h('td', { class: 'mono' }, pms(a.p50_ms)), h('td', { class: 'mono' }, pms(a.p95_ms)), h('td', { class: 'mono' }, pms(a.p99_ms)))), '') : null);
+    } },
+    queries: { title: 'Yavaş veritabanı sorguları', build(d) {
+      const { h, table, pill } = A();
+      const list = [...((d.queries && d.queries.queries) || [])].sort((a, b) => (b.total_ms || 0) - (a.total_ms || 0)).slice(0, 15);
+      return sec('Veritabanı sorguları', list.length ? table(['Veritabanı', 'Sorgu', 'Çağrı', 'Ortalama', 'Toplam', ''], list.map((x) => h('tr', null, h('td', null, x.asset),
+        h('td', null, h('code', { class: 'perf-sql' }, x.query.length > 90 ? x.query.slice(0, 90) + '…' : x.query)), h('td', { class: 'mono' }, String(x.calls)), h('td', { class: 'mono' }, pms(x.mean_ms)), h('td', { class: 'mono' }, pms(x.total_ms)), h('td', null, x.slow ? pill('down', 'Yavaş') : ''))), '')
+        : h('p', { class: 'muted' }, 'Sorgu verisi yok (ajanda APM_PG_DSN veya pgstats probe\'u gerekir).'));
+    } },
+    scenarios: { title: 'Kullanıcı senaryoları', build(d) {
+      const { h, kpi, table, pill, ago, fmt } = A();
+      const ok = d.scens.filter((s) => s.last_ok === true).length, bad = d.scens.filter((s) => s.last_ok === false);
+      const blocked = bad.filter((s) => /Bot koruması/.test(s.last_error || ''));
+      const slow = [...d.scens].filter((s) => s.last_duration_ms != null).sort((a, b) => b.last_duration_ms - a.last_duration_ms).slice(0, 8);
+      const chg = d.scens.filter((s) => s.last_changed_at && Date.now() - new Date(s.last_changed_at) < d.days * 864e5);
+      return sec('Kullanıcı senaryoları', kpis(kpi('Senaryo', String(d.scens.length), `${ok} başarılı`, null, ''), kpi('Başarısız', String(bad.length), 'son çalıştırma', null, bad.length ? 'bad' : ''),
+        kpi('Bot korumasına takılan', String(blocked.length), 'site engelledi', null, blocked.length ? 'warn' : ''), kpi('Sayfası değişen', String(chg.length), rangeLabel(d.range), null, '')),
+        cols(card('Sonuçlar', donut([['Başarılı', ok, 'c-good'], ['Başarısız', bad.length - blocked.length, 'c-crit'], ['Bot koruması', blocked.length, 'c-warn'], ['Bekliyor', d.scens.length - ok - bad.length, 'c-info']], d.scens.length, 'senaryo')),
+          card('En uzun süren', slow.length ? bars(slow.map((s) => [s.name, Number((s.last_duration_ms / 1000).toFixed(1)), 'website']), ' sn', (k) => k) : h('p', { class: 'muted' }, 'Veri yok.'))),
+        bad.length ? table(['Senaryo', 'Asset', 'Son çalışma', 'Hata'], bad.map((s) => h('tr', null, h('td', null, h('b', null, s.name)), h('td', null, s.asset), h('td', { class: 'mono small' }, ago(s.last_run)), h('td', { class: 'error small' }, s.last_error || 'başarısız'))), '') : null);
+    } },
+    certs: { title: 'Sertifika süreleri', build(d) {
+      const { h, table, pill } = A();
+      const list = d.assets.filter((a) => a.latest && a.latest['probe.cert_days_left'] != null).sort((a, b) => a.latest['probe.cert_days_left'] - b.latest['probe.cert_days_left']);
+      const soon = list.filter((a) => a.latest['probe.cert_days_left'] <= 30);
+      return sec('Sertifika süreleri (TLS)', list.length ? h('div', { class: 'stack' }, soon.length ? callout(soon.some((a) => a.latest['probe.cert_days_left'] <= 7) ? 'crit' : 'warn', `${soon.length} sertifika 30 gün içinde doluyor`, soon.slice(0, 5).map((a) => a.name).join(', '))
+        : callout('good', 'Yakında dolacak sertifika yok', `${list.length} sertifika 30 günden uzun süre geçerli.`),
+        table(['Asset', 'Kalan gün', 'Durum'], list.slice(0, 25).map((a) => { const n = a.latest['probe.cert_days_left']; return h('tr', null, h('td', null, h('b', null, a.name)), h('td', { class: 'mono' }, String(Math.round(n))), h('td', null, n <= 7 ? pill('down', 'Kritik') : n <= 30 ? pill('degraded', 'Yaklaşıyor') : pill('up', 'Geçerli'))); }), ''))
+        : h('p', { class: 'muted' }, 'TLS probe\'u olan asset yok.'));
+    } },
+    agents: { title: 'Ajanlar', build(d) {
+      const { h, kpi, table, ago } = A();
+      const list = d.assets.filter((a) => a.collection === 'agent');
+      const off = list.filter((a) => a.status === 'offline' || a.status === 'down');
+      const sm = d.agents;
+      return sec('Ajanlar', list.length || sm ? h('div', { class: 'stack' }, kpis(kpi('Ajan', String(sm ? sm.total : list.length), `${list.length - off.length} çevrimiçi`, null, ''), kpi('Çevrimdışı', String(off.length), 'şu an', null, off.length ? 'bad' : ''),
+        sm ? kpi('Güncel olmayan', String((sm.update || {}).available || 0), 'yeni sürüm bekliyor', null, ((sm.update || {}).available || 0) ? 'warn' : '') : null,
+        sm ? kpi('Uzaktan ayarlı', String((sm.config || {}).remote_applied || 0), `${(sm.config || {}).remote_pending || 0} bekliyor`, null, '') : null),
+        sm && sm.versions ? card('Sürüm dağılımı', bars(Object.entries(sm.versions).sort((a, b) => b[1] - a[1]), '', null)) : null,
+        off.length ? table(['Ajan', 'Durum', 'Son veri'], off.slice(0, 20).map((a) => h('tr', null, h('td', null, h('b', null, a.name)), h('td', null, a.status), h('td', { class: 'mono small' }, ago(a.last_seen)))), '') : null) : h('p', { class: 'muted' }, 'Ajan kurulu değil.'));
+    } },
+    surface: { title: 'Saldırı yüzeyi', build(d) {
+      const { h, kpi, table, pill, SEV, ago } = A();
+      const ev = ((d.surf && d.surf.events) || []).filter((e) => (!d.group || d.assets.some((a) => a.name === e.asset)) && Date.now() - new Date(e.at) < d.days * 864e5);
+      return sec(`Saldırı yüzeyi · ${rangeLabel(d.range)}`, ev.length ? h('div', { class: 'stack' }, kpis(kpi('Sapma', String(ev.length), 'dönemde', null, ''), kpi('Kritik', String(ev.filter((e) => e.severity === 'critical').length), 'sapma', null, ev.some((e) => e.severity === 'critical') ? 'bad' : ''),
+        kpi('Gözden geçirilmemiş', String(ev.filter((e) => !e.reviewed).length), 'sapma', null, '')),
+        table(['Önem', 'Asset', 'Öğe', 'Zaman', 'Durum'], ev.slice(0, 20).map((e) => h('tr', null, h('td', null, pill(e.severity, SEV[e.severity])), h('td', null, e.asset), h('td', { class: 'mono' }, e.item), h('td', { class: 'mono small' }, ago(e.at)), h('td', null, e.reviewed ? 'İncelendi' : 'Açık'))), ''))
+        : h('p', { class: 'muted' }, 'Dönemde referanstan sapma yok.'));
+    } },
+    rootcause: { title: 'Kök neden ve etki', build(d) {
+      const { h } = A();
+      const nodes = d.topo.nodes || [], name = (id) => (nodes.find((n) => n.id === id) || {}).name || String(id);
+      const roots = (d.topo.root_causes || []).map(name), imp = nodes.filter((n) => n.impacted);
+      return sec('Kök neden ve etki', roots.length ? callout('crit', `${roots.length} olası kök neden`, roots.slice(0, 12).join(', ') + (roots.length > 12 ? ` ve ${roots.length - 12} tane daha` : '')) : callout('good', 'Kök neden yok', 'Bağımlılık zincirinde sorun görünmüyor.'),
+        imp.length ? h('p', { class: 'muted small' }, `${imp.length} bileşen bağımlılıkları nedeniyle etkileniyor: ${imp.slice(0, 10).map((n) => n.name).join(', ')}.`) : null);
+    } },
+  };
+  const SECTION_ORDER = ['summary', 'inventory', 'availability', 'alerts', 'perf', 'queries', 'scenarios', 'certs', 'agents', 'surface', 'rootcause'];
+
+  async function buildCustom(title, ids, o, audience) {
+    const d = scoped(await loadExtra(LAST.data || await load(), o), o);
+    LAST.data = d;
+    const subtitle = `${rangeLabel(o.range)}${o.group ? ' · grup: ' + o.group : ' · tüm varlıklar'}`;
+    return paper(title, subtitle, audience || 'Özel', ...ids.filter((id) => SECTIONS[id]).map((id) => SECTIONS[id].build(d)));
+  }
+
+  // ---- kayıtlı şablonlar (bu tarayıcıda) ----
+  const TPL_KEY = 'apm_report_tpls';
+  const tplLoad = () => {
+    try { const v = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return (Array.isArray(v) ? v : []).filter((x) => x && typeof x.name === 'string' && Array.isArray(x.sections)).slice(0, 30)
+      .map((x) => ({ id: String(x.id || x.name).slice(0, 30), name: x.name.slice(0, 50), sections: x.sections.filter((i) => SECTIONS[i]), range: RANGES.some((r) => r[0] === x.range) ? x.range : '24h', group: String(x.group || '').slice(0, 60) })); }
+    catch (e) { return []; }
+  };
+  const tplSave = (list) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(list)); return true; } catch (e) { return false; } };
+  const BUILTIN_TPL = [
+    { id: 'b-ops', name: 'Operasyon haftalık', sections: ['summary', 'alerts', 'availability', 'agents', 'certs'], range: '7d', group: '' },
+    { id: 'b-perf', name: 'Performans ve veritabanı', sections: ['summary', 'perf', 'queries', 'scenarios'], range: '7d', group: '' },
+    { id: 'b-mgmt', name: 'Yönetim aylık', sections: ['summary', 'inventory', 'alerts', 'certs', 'surface'], range: '30d', group: '' },
+  ];
+
+  function builder() {
+    const { h } = A();
+    const checks = SECTION_ORDER.map((id) => { const c = h('input', { type: 'checkbox', value: id }); c.checked = ['summary', 'alerts', 'perf'].includes(id); return [id, c]; });
+    const range = h('select', { 'aria-label': 'Tarih aralığı' }, RANGES.map(([v, l]) => h('option', { value: v }, l)));
+    const group = h('select', { 'aria-label': 'Grup' }, h('option', { value: '' }, 'Tüm varlıklar'));
+    A().api('/api/assets').then((list) => { const keep = group.value; [...new Set(list.map((a) => a.group).filter(Boolean))].sort().forEach((g) => group.append(h('option', { value: g }, g))); group.value = keep; }).catch(() => {});
+    const tplSel = h('select', { 'aria-label': 'Şablon' });
+    const tname = h('input', { type: 'text', placeholder: 'Şablon adı', maxlength: '50', 'aria-label': 'Şablon adı' });
+    const msg = h('span', { class: 'small muted', role: 'status' });
+    const cfg = () => ({ sections: checks.filter(([, c]) => c.checked).map(([id]) => id), range: range.value, group: group.value });
+    const fill = (t) => { checks.forEach(([id, c]) => { c.checked = t.sections.includes(id); }); range.value = t.range; if (t.group && ![...group.options].some((o) => o.value === t.group)) group.append(h('option', { value: t.group }, t.group)); group.value = t.group || ''; };
+    const refresh = () => {
+      const all = [...BUILTIN_TPL, ...tplLoad()];
+      tplSel.replaceChildren(h('option', { value: '' }, 'Şablon seç…'), ...all.map((t) => h('option', { value: t.id }, (t.id.startsWith('b-') ? '' : '★ ') + t.name)));
+    };
+    refresh();
+    tplSel.addEventListener('change', () => { const t = [...BUILTIN_TPL, ...tplLoad()].find((x) => x.id === tplSel.value); if (t) { fill(t); tname.value = t.id.startsWith('b-') ? '' : t.name; msg.textContent = ''; } });
+    const run = () => { const c = cfg(); if (!c.sections.length) { msg.textContent = 'En az bir bölüm seçin.'; return; } preview({ title: tname.value || 'Özel rapor', build: () => buildCustom(tname.value || 'Özel rapor', c.sections, c) }); };
+    const save = h('button', { type: 'button', onclick: () => {
+      const name = tname.value.trim(); if (!name) { msg.textContent = 'Şablon için ad girin.'; return; }
+      const list = tplLoad().filter((t) => t.name !== name); list.push({ id: 't' + Date.now().toString(36), name, ...cfg() });
+      msg.textContent = tplSave(list) ? 'Şablon kaydedildi (bu tarayıcıda).' : 'Kaydedilemedi (tarayıcı depolaması kapalı).'; refresh();
+    } }, 'Şablonu kaydet');
+    const del = h('button', { type: 'button', class: 'danger', onclick: () => {
+      const id = tplSel.value; if (!id || id.startsWith('b-')) { msg.textContent = 'Yalnızca kendi şablonlarınız silinebilir.'; return; }
+      tplSave(tplLoad().filter((t) => t.id !== id)); tname.value = ''; msg.textContent = 'Şablon silindi.'; refresh();
+    } }, 'Sil');
+    return h('div', { class: 'panel report-builder' }, h('h3', null, 'Özel rapor oluştur'),
+      h('p', { class: 'muted small' }, 'Bölümleri seçin, kapsamı ve tarih aralığını belirleyin; raporu önizleyin, yazdırın veya CSV/JSON olarak indirin. Şablonlar bu tarayıcıda saklanır.'),
+      h('div', { class: 'rb-checks' }, checks.map(([id, c]) => h('label', { class: 'check' }, c, ' ', SECTIONS[id].title))),
+      h('div', { class: 'row' }, h('label', null, 'Dönem ', range), h('label', null, 'Kapsam ', group), h('label', null, 'Şablon ', tplSel), tname, save, del),
+      h('div', { class: 'row' }, h('button', { type: 'button', class: 'primary', onclick: run }, 'Önizle'), msg));
+  }
+
+  // ---- dışa aktarma: önizlemedeki tabloları CSV, ham veriyi JSON olarak indirir ----
+  function download(name, mime, text) {
+    const a = document.createElement('a'); const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    a.href = url; a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  const stamp = () => new Date().toISOString().slice(0, 10);
+  function exportCSV() {
+    const out = [];
+    for (const t of document.querySelectorAll('#report-body table')) {
+      const secEl = t.closest('.rsec'), title = secEl ? (secEl.querySelector('h2') || {}).textContent : '';
+      if (title) out.push(`"# ${title.replace(/"/g, '""')}"`);
+      for (const tr of t.querySelectorAll('tr')) out.push([...tr.children].map((c) => '"' + c.textContent.trim().replace(/\s+/g, ' ').replace(/"/g, '""') + '"').join(';'));
+      out.push('');
+    }
+    if (out.length === 0) return;
+    download(`appmon-rapor-${stamp()}.csv`, 'text/csv;charset=utf-8', '﻿' + out.join('\r\n'));
+  }
+  function exportJSON() {
+    const d = LAST.data; if (!d) return;
+    const pick = { olusturma: new Date().toISOString(), varliklar: d.assets, acik_alarmlar: d.open, kapanan_alarmlar: d.resolved, probelar: d.probes, senaryolar: d.scens,
+      performans: d.perf && d.perf.apps, sorgular: d.queries && d.queries.queries, saldiri_yuzeyi: d.surf && d.surf.events, ajanlar: d.agents };
+    download(`appmon-rapor-${stamp()}.json`, 'application/json', JSON.stringify(pick, null, 2));
+  }
+
   async function preview(r) {
     const { h, clearMarks } = A();
     const modal = $('#report-modal'), body = $('#report-body');
@@ -198,7 +409,7 @@
     $('#report-title').textContent = r.title;
     body.replaceChildren(h('p', { class: 'muted pad' }, 'Rapor hazırlanıyor…'));
     modal.hidden = false; document.body.classList.add('report-open');
-    try { body.replaceChildren(r.build(await load())); body.scrollTop = 0; }
+    try { const d = await load(); LAST.data = d; body.replaceChildren(await r.build(d)); body.scrollTop = 0; }
     catch (e) { body.replaceChildren(h('p', { class: 'error pad' }, 'Rapor oluşturulamadı: ' + e.message)); }
   }
   function closePreview() { $('#report-modal').hidden = true; document.body.classList.remove('report-open'); A().clearMarks(); }
@@ -206,13 +417,19 @@
     $('#report-close').addEventListener('click', closePreview);
     $('#report-print').addEventListener('click', () => { A().clearMarks(); window.print(); });
     $('#report-find').addEventListener('click', () => A().toggleFind(true));
+    const pr = $('#report-print');
+    for (const [label, fn] of [['CSV', exportCSV], ['JSON', exportJSON]]) {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.title = label + ' olarak indir'; b.addEventListener('click', fn); pr.after(b);
+    }
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#report-modal').hidden && $('#findbar').hidden) closePreview(); });
   });
 
   window.APM_REPORTS = { section() {
     const { h } = A();
-    return h('section', null, h('h3', null, 'Raporlar'),
+    return h('section', null,
       h('p', { class: 'muted' }, 'Ön tanımlı raporlar canlı veriyle oluşturulur. Önizleyin, ardından “Yazdır / PDF” ile PDF olarak kaydedin veya yazdırın.'),
+      builder(),
+      h('h3', null, 'Hazır raporlar'),
       h('div', { class: 'report-cards' }, REPORTS.map((r) => h('div', { class: 'panel report-card' },
         h('div', { class: 'rc-top' }, h('span', { class: 'rc-icon', 'aria-hidden': 'true' }, r.icon), h('span', { class: 'tag' }, r.audience)),
         h('b', null, r.title), h('p', { class: 'muted small' }, r.desc),

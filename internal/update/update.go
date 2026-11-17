@@ -389,9 +389,45 @@ func RequestApply(dir, id, by string) error {
 	return os.Rename(tmp, filepath.Join(dir, "apply.json"))
 }
 
+// Prev bir önceki sürüme dönüş için güncelleyicinin bıraktığı bilgidir (prev.json).
+type Prev struct {
+	Version string `json:"version"`
+	Time    string `json:"time,omitempty"`
+	Backup  string `json:"backup,omitempty"`
+}
+
+// ReadPrev dönülebilecek önceki sürümü döndürür (yoksa nil).
+func ReadPrev(dir string) *Prev {
+	b, err := os.ReadFile(filepath.Join(dir, "prev.json"))
+	if err != nil {
+		return nil
+	}
+	var p Prev
+	if json.Unmarshal(b, &p) != nil || p.Version == "" {
+		return nil
+	}
+	return &p
+}
+
+// RequestRollback apply.json'a "rollback" eylemi yazar; güncelleyici önceki ikili dosyaya döner.
+func RequestRollback(dir, by string) error {
+	if ReadPrev(dir) == nil {
+		return errors.New("dönülecek önceki sürüm yok")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "apply.json")); err == nil {
+		return errors.New("zaten bir güncelleme isteği işleniyor")
+	}
+	b, _ := json.Marshal(map[string]any{"action": "rollback", "by": by, "time": time.Now()})
+	tmp := filepath.Join(dir, ".apply.tmp")
+	if err := os.WriteFile(tmp, b, 0o640); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "apply.json"))
+}
+
 // Status güncelleyicinin son sonucudur (status.json).
 type Status struct {
-	State   string `json:"state"` // running, ok, failed, rolled_back
+	State   string `json:"state"` // running, ok, failed, rolled_back (otomatik), reverted (elle geri dönüş)
 	From    string `json:"from,omitempty"`
 	To      string `json:"to,omitempty"`
 	Message string `json:"message,omitempty"`

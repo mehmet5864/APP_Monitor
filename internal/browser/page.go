@@ -197,6 +197,19 @@ func (p *Page) docProblem() string {
 	return ""
 }
 
+func (p *Page) docStatusCode() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.docStatus
+}
+
+// Title sayfa başlığını döndürür (hata olursa boş).
+func (p *Page) Title(ctx context.Context) string {
+	var s string
+	_ = p.Eval(ctx, `document.title || ''`, &s)
+	return s
+}
+
 // Eval sayfada bir ifade çalıştırıp sonucu out'a çözer.
 func (p *Page) Eval(ctx context.Context, expr string, out any) error {
 	var r struct {

@@ -27,16 +27,33 @@ services:
       APM_ASSET_LIMIT: ${APM_ASSET_LIMIT:-25}
       APM_RETENTION_DAYS: ${APM_RETENTION_DAYS:-14}
       APM_BROWSER_ENABLED: ${APM_BROWSER_ENABLED:-true}
+      APM_MASTER_KEY: ${APM_MASTER_KEY:-}   # kasa ana anahtari (openssl rand -base64 32); bos birakilirsa /data/master.key otomatik uretilir
+      APM_SYSLOG_ADDR: ${APM_SYSLOG_ADDR:-}   # erişim günlüğü alıcısı: .env içine APM_SYSLOG_ADDR=:1514 yazın
+      APM_SYSLOG_ALLOW: ${APM_SYSLOG_ALLOW:-}
+      APM_ADVISORY_AUTO: ${APM_ADVISORY_AUTO:-}   # zafiyet (CVE) kayıtlarını otomatik indir: .env içine APM_ADVISORY_AUTO=1
+      APM_LOG_EVENTS: ${APM_LOG_EVENTS:-}   # log saklama: .env içine APM_LOG_EVENTS=1 yazın (varsayılan seviye: uyarı ve üstü, 3 gün)
+      APM_LOG_MIN_LEVEL: ${APM_LOG_MIN_LEVEL:-}
+      APM_LOG_RETENTION_DAYS: ${APM_LOG_RETENTION_DAYS:-}
+      APM_LOG_RATE: ${APM_LOG_RATE:-}
+      APM_NETFLOW_ADDR: ${APM_NETFLOW_ADDR:-}   # NetFlow/IPFIX: .env içine APM_NETFLOW_ADDR=:2055 yazın
+      APM_NETFLOW_ALLOW: ${APM_NETFLOW_ALLOW:-}
       APM_CA_FILE: /certs/ca.pem   # kurum içi CA (isteğe bağlı): ./certs/ca.pem dosyasını koyun
     volumes:
       - ./certs:/certs:ro
+      - appmon-data:/data   # kasa ana anahtari (APM_MASTER_KEY verilmediyse)
     shm_size: "512mb"   # Chromium için paylaşımlı bellek
+    cap_add:
+      - NET_RAW   # traceroute (ham ICMP soketi) icin
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"   # kök olmadan ICMP (ping) probe'u için
     extra_hosts:
       - "host.docker.internal:host-gateway"   # ana makinedeki uygulamaları izlemek için
     ports:
       - "${APM_PORT:-8080}:8080"
+      - "${APM_SYSLOG_PORT:-1514}:1514/udp"   # syslog alıcısı (APM_SYSLOG_ADDR=:1514 ile açılır)
+      - "${APM_SYSLOG_PORT:-1514}:1514/tcp"
+      - "${APM_NETFLOW_PORT:-2055}:2055/udp"   # NetFlow/IPFIX toplayıcı (APM_NETFLOW_ADDR=:2055 ile açılır)
 
 volumes:
   appmon-db:
+  appmon-data:

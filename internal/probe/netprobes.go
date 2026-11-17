@@ -78,6 +78,9 @@ func tcpProbe(ctx context.Context, d *net.Dialer, spec Spec) error {
 		return err
 	}
 	defer conn.Close()
+	spec.Det.Add("Bağlanılan adres", conn.RemoteAddr().String())
+	spec.Det.Add("Gönderilen metin", map[bool]string{true: "var"}[spec.Opts.Send != ""])
+	spec.Det.Add("Yanıtta aranan metin", spec.Opts.Expect)
 	if spec.Opts.Send == "" && spec.Opts.Expect == "" {
 		return nil
 	}
@@ -134,10 +137,12 @@ func udpProbe(ctx context.Context, d *net.Dialer, spec Spec, block bool) error {
 		return err
 	}
 	buf := make([]byte, 2048)
+	spec.Det.Add("Çözümlenen adres", ip.String())
 	n, err := conn.Read(buf)
 	if err != nil {
 		return errors.New("yanıt alınamadı (UDP servisi yanıt vermiyor veya port kapalı)")
 	}
+	spec.Det.Add("Yanıt boyutu", fmt.Sprintf("%d bayt", n))
 	if spec.Opts.Expect != "" && !strings.Contains(string(buf[:n]), spec.Opts.Expect) {
 		return fmt.Errorf("yanıtta %q bulunamadı", spec.Opts.Expect)
 	}
@@ -189,6 +194,11 @@ func ntpProbe(ctx context.Context, d *net.Dialer, spec Spec, block bool) (map[st
 	}
 	t2, t3 := ntpTime(resp[32:40]), ntpTime(resp[40:48])
 	offset := (t2.Sub(t1) + t3.Sub(t4)) / 2
+	spec.Det.Add("Çözümlenen adres", ip.String())
+	spec.Det.Add("Stratum", stratum)
+	spec.Det.Add("Saat sapması (işaretli)", fmt.Sprintf("%.2f ms", float64(offset.Microseconds())/1000))
+	spec.Det.Add("Gidiş-dönüş gecikmesi", fmt.Sprintf("%.2f ms", float64(t4.Sub(t1).Microseconds())/1000))
+	spec.Det.Add("Sunucu saati (UTC)", t3.UTC().Format("2006-01-02 15:04:05"))
 	return map[string]float64{"ntp_offset_ms": math.Abs(float64(offset.Microseconds()) / 1000)}, nil
 }
 
@@ -249,6 +259,15 @@ func dnsProbe(ctx context.Context, d *net.Dialer, spec Spec) (map[string]float64
 	if len(answers) == 0 {
 		return nil, errors.New("kayıt bulunamadı")
 	}
+	spec.Det.Add("Sorgulanan ad", name)
+	rec := strings.ToUpper(spec.Opts.Record)
+	if rec == "" {
+		rec = "A"
+	}
+	spec.Det.Add("Kayıt türü", rec)
+	spec.Det.Add("DNS sunucusu", spec.Opts.Server)
+	spec.Det.Add("Dönen kayıt sayısı", len(answers))
+	spec.Det.Add("Cevaplar", strings.Join(answers, ", "))
 	if e := spec.Opts.Expect; e != "" && !strings.Contains(strings.ToLower(strings.Join(answers, " ")), strings.ToLower(e)) {
 		return nil, fmt.Errorf("yanıtta %q yok (dönen: %s)", e, strings.Join(answers, ", "))
 	}
@@ -272,6 +291,25 @@ func tlsProbe(ctx context.Context, d *net.Dialer, spec Spec) (map[string]float64
 	if len(certs) == 0 {
 		return nil, errors.New("sertifika alınamadı")
 	}
+	st := conn.(*tls.Conn).ConnectionState()
+	c0 := certs[0]
+	spec.Det.Add("Sertifika sahibi", c0.Subject.CommonName)
+	spec.Det.Add("Veren", strings.TrimSpace(c0.Issuer.CommonName+" "+strings.Join(c0.Issuer.Organization, " ")))
+	spec.Det.Add("Geçerlilik başlangıcı", c0.NotBefore.UTC().Format("2006-01-02"))
+	spec.Det.Add("Geçerlilik bitişi", c0.NotAfter.UTC().Format("2006-01-02"))
+	if len(c0.DNSNames) > 0 {
+		names := c0.DNSNames
+		more := ""
+		if len(names) > 8 {
+			names, more = names[:8], fmt.Sprintf(" (+%d)", len(c0.DNSNames)-8)
+		}
+		spec.Det.Add("Alternatif adlar (SAN)", strings.Join(names, ", ")+more)
+	}
+	spec.Det.Add("İmza algoritması", c0.SignatureAlgorithm.String())
+	spec.Det.Add("Anahtar algoritması", c0.PublicKeyAlgorithm.String())
+	spec.Det.Add("Zincir uzunluğu", len(certs))
+	spec.Det.Add("TLS sürümü", tls.VersionName(st.Version))
+	spec.Det.Add("Şifre takımı", tls.CipherSuiteName(st.CipherSuite))
 	left := time.Until(certs[0].NotAfter).Hours() / 24
 	return map[string]float64{"cert_days_left": math.Round(left*10) / 10}, nil
 }

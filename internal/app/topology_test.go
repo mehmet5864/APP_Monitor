@@ -32,3 +32,26 @@ func TestRootCausesCycleDoesNotHang(t *testing.T) {
 	// Döngüde sonsuz döngüye girmemeli; sonuçta kök neden bulunamaması kabul edilir.
 	_ = rootCauses(map[int64]string{1: "down", 2: "down"}, deps)
 }
+
+func TestImpactedBy(t *testing.T) {
+	// web(1) -> api(2) -> db(3); db(3) çalışır: host(5) üzerinde (3 -> 5); cache(4) bağımsız
+	deps := map[int64][]int64{1: {2}, 2: {3}, 3: {5}}
+	st := map[int64]string{1: "up", 2: "up", 3: "up", 4: "up", 5: "down"}
+	got := impactedBy(st, deps)
+	want := map[int64][]int64{1: {5}, 2: {5}, 3: {5}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	// çalışmayanın kendisi etkilenmiş sayılmaz; sağlıklı bağımlılık etkilemez
+	st[5] = "up"
+	if got := impactedBy(st, deps); len(got) != 0 {
+		t.Fatalf("beklenmeyen etki: %v", got)
+	}
+	// bilinmeyen/degraded etkilemez
+	st[5] = "degraded"
+	if got := impactedBy(st, deps); len(got) != 0 {
+		t.Fatalf("degraded etkilememeli: %v", got)
+	}
+	// döngü sonsuz döngüye girmemeli
+	_ = impactedBy(map[int64]string{1: "up", 2: "down"}, map[int64][]int64{1: {2}, 2: {1}})
+}

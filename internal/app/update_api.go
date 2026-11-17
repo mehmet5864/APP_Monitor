@@ -32,6 +32,9 @@ func (s *Server) updateInfo(w http.ResponseWriter, r *http.Request, a Auth) {
 			out["staged"] = st
 		}
 		out["pending"] = update.Pending(s.UpdateDir)
+		if pv := update.ReadPrev(s.UpdateDir); pv != nil {
+			out["prev"] = pv
+		}
 		if stt := update.ReadStatus(s.UpdateDir); stt != nil {
 			out["status"] = stt
 		}
@@ -103,4 +106,19 @@ func (s *Server) updateCancel(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	update.Clear(s.UpdateDir)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/system/update/rollback  — bir önceki sürüme döner (ikili dosya; veritabanı değişmez)
+func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request, a Auth) {
+	if ok, why := s.updateSupport(); !ok {
+		fail(w, 409, why)
+		return
+	}
+	pv := update.ReadPrev(s.UpdateDir)
+	if err := update.RequestRollback(s.UpdateDir, a.Label); err != nil {
+		fail(w, 409, err.Error())
+		return
+	}
+	s.audit(r.Context(), a.TenantID, a.Label, "system.update.rollback", fmt.Sprintf("%s -> %s", version.Version, pv.Version))
+	writeJSON(w, 202, map[string]any{"ok": true, "message": "Önceki sürüme dönülüyor; servis yeniden başlayacak."})
 }

@@ -75,6 +75,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, a Auth) {
 		"by_collection": countBy(ctx, s.DB, `SELECT collection, count(*) FROM assets WHERE tenant_id = $1 GROUP BY collection`, t),
 		"open_alerts":   openAlerts,
 		"critical":      critical,
+		"monitoring":    s.monitoringState(ctx, t),
 	})
 }
 
@@ -83,7 +84,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request, a Auth) {
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a Auth) {
 	ctx := r.Context()
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id, name, kind, language, collection, status, last_seen, labels, grp, tags FROM assets WHERE tenant_id = $1 ORDER BY name`, a.TenantID)
+		`SELECT id, name, kind, language, collection, status, last_seen, labels, grp, tags, show_overview FROM assets WHERE tenant_id = $1 ORDER BY name`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -99,14 +100,15 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a Auth) {
 		var labels []byte
 		var grp string
 		var tags []string
-		if err := rows.Scan(&id, &name, &kind, &lang, &coll, &status, &seen, &labels, &grp, pq.Array(&tags)); err != nil {
+		var ovw bool
+		if err := rows.Scan(&id, &name, &kind, &lang, &coll, &status, &seen, &labels, &grp, pq.Array(&tags), &ovw); err != nil {
 			continue
 		}
 		if tags == nil {
 			tags = []string{}
 		}
 		it := item{"id": id, "name": name, "kind": kind, "language": lang, "collection": coll, "status": status,
-			"labels": json.RawMessage(labels), "latest": map[string]float64{}, "group": grp, "tags": tags}
+			"labels": json.RawMessage(labels), "latest": map[string]float64{}, "group": grp, "tags": tags, "overview": ovw}
 		if seen.Valid {
 			it["last_seen"] = seen.Time
 		}
@@ -115,10 +117,9 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	// Her asset için son 10 dakikadaki en güncel temel metrikler.
 	mrows, err := s.DB.QueryContext(ctx,
-		`SELECT DISTINCT ON (asset_id, name) asset_id, name, value FROM metrics
+		`SELECT asset_id, name, value FROM asset_latest
 		 WHERE tenant_id = $1 AND time > now() - interval '10 minutes'
-		   AND name IN ('host.cpu_pct','host.mem_pct','host.disk_pct','probe.latency_ms')
-		 ORDER BY asset_id, name, time DESC`, a.TenantID)
+		   AND name IN ('host.cpu_pct','host.mem_pct','host.disk_pct','probe.latency_ms')`, a.TenantID)
 	if err == nil {
 		defer mrows.Close()
 		for mrows.Next() {
@@ -281,10 +282,13 @@ func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 			it["verify_tls"] = verify
 		}
 		var po probe.Options
-		if json.Unmarshal(optsRaw, &po) == nil && typ != "http" && typ != "postgres" {
+		if json.Unmarshal(optsRaw, &po) == nil && typ != "http" && typ != "postgres" && typ != "pgstats" {
 			hasComm := po.Community != ""
 			it["has_authpass"], it["has_privpass"] = po.AuthPass != "", po.PrivPass != ""
 			it["options"], it["has_community"] = po.Redacted(), hasComm // topluluk adı ve parolalar gizlidir
+			if po.HostKey != "" {
+				it["host_fp"] = probe.KeyFingerprint(po.HostKey)
+			}
 		}
 		if last.Valid {
 			it["last_run"] = last.Time
@@ -296,7 +300,7 @@ func (s *Server) listProbes(w http.ResponseWriter, r *http.Request, a Auth) {
 
 // maskTarget PostgreSQL bağlantı dizelerindeki parolayı arayüzde göstermez.
 func maskTarget(typ, target string) string {
-	if typ != "postgres" {
+	if typ != "postgres" && typ != "pgstats" {
 		return target
 	}
 	if u, err := url.Parse(target); err == nil && u.User != nil {
@@ -323,15 +327,15 @@ func validateTarget(typ, target string) error {
 		if _, _, err := splitHostPort(target); err != nil {
 			return errors.New("tcp hedefi host:port biçiminde olmalı")
 		}
-	case "postgres":
+	case "postgres", "pgstats":
 		if !strings.HasPrefix(target, "postgres://") && !strings.HasPrefix(target, "postgresql://") {
 			return errors.New("postgres hedefi postgres://kullanici:parola@host:5432/veritabani biçiminde olmalı")
 		}
-	case "icmp", "dns":
+	case "icmp", "dns", "trace":
 		if !probe.ValidHost(target) {
 			return errors.New(typ + " hedefi geçerli bir ad veya IP olmalı (şema/port olmadan)")
 		}
-	case "snmp", "tls", "ntp", "host":
+	case "snmp", "tls", "ntp", "host", "snmpx":
 		host := target
 		if h, _, err := splitHostPort(target); err == nil {
 			host = h
@@ -358,7 +362,7 @@ func validateOptions(typ string, o *probe.Options) error {
 			return errors.New("paket sayısı 1 ile 10 arasında olmalı")
 		}
 		keep.Count = o.Count
-	case "snmp", "host":
+	case "snmp", "host", "snmpx":
 		if typ == "snmp" && o.OID != "" && !probe.ValidOID(o.OID) {
 			return errors.New("OID 1.3.6.1.2.1.1.3.0 gibi noktalı sayılar olmalı")
 		}
@@ -369,20 +373,70 @@ func validateOptions(typ string, o *probe.Options) error {
 			return errors.New("kimlik bilgisi alanları çok uzun")
 		}
 		keep = probe.Options{Community: o.Community, OID: o.OID, Version: o.Version, Expect: o.Expect}
+		if typ == "snmpx" {
+			if err := probe.ValidateSNMPX(*o); err != nil {
+				return err
+			}
+			keep = probe.Options{Community: o.Community, Version: o.Version, Template: o.Template, IfFilter: o.IfFilter, OIDs: o.OIDs}
+		}
 		if typ == "host" {
 			keep.OID, keep.Expect = "", ""
-			if o.Method != "" && o.Method != "snmp" {
-				return errors.New("yöntem snmp olmalı (ssh bu sürümde yok)")
+			if o.Method != "" && o.Method != "snmp" && o.Method != "ssh" {
+				return errors.New("yöntem snmp veya ssh olmalı")
 			}
 			keep.Method = "snmp"
+			if o.Method == "ssh" {
+				if !probe.ValidSSHUser(o.SSHUser) {
+					return errors.New("SSH kullanıcı adı geçersiz (harf, rakam, _ . - ; en fazla 32 karakter)")
+				}
+				if o.SecretID <= 0 {
+					return errors.New("SSH için kasadan bir anahtar veya parola kaydı seçin")
+				}
+				if o.HostKey != "" && (len(o.HostKey) > 2048 || len(strings.Fields(o.HostKey)) != 2 || probe.KeyFingerprint(o.HostKey) == "") {
+					return errors.New("sunucu anahtarı biçimi geçersiz")
+				}
+				keep = probe.Options{Method: "ssh", SSHUser: o.SSHUser, SecretID: o.SecretID, HostKey: o.HostKey, SSHLegacy: o.SSHLegacy}
+			}
 			for _, m := range o.Metrics {
 				if m != "cpu" && m != "mem" && m != "disk" {
 					return errors.New("ölçümler cpu, mem veya disk olmalı")
 				}
 			}
 			keep.Metrics = o.Metrics
+			if keep.Method == "ssh" {
+				seen := map[string]bool{}
+				for _, c := range o.Collect {
+					ok := false
+					for _, k := range probe.SSHCollectKeys {
+						ok = ok || c == k
+					}
+					if !ok {
+						return errors.New("toplanacak veri geçersiz: " + c)
+					}
+					if !seen[c] {
+						seen[c] = true
+						keep.Collect = append(keep.Collect, c)
+					}
+				}
+				if len(o.Mounts) > 40 {
+					return errors.New("en çok 40 dizin seçilebilir")
+				}
+				for _, m := range o.Mounts {
+					m = strings.TrimSpace(m)
+					if m == "" {
+						continue
+					}
+					if len(m) > 120 || !strings.HasPrefix(m, "/") || strings.ContainsAny(m, "\r\n\t") {
+						return errors.New("dizin / ile başlamalı ve en çok 120 karakter olmalı: " + m)
+					}
+					keep.Mounts = append(keep.Mounts, m)
+				}
+				if len(keep.Collect) > 0 {
+					keep.Metrics = nil // seçim artık collect ile yapılır
+				}
+			}
 		}
-		if o.Version == "3" {
+		if o.Version == "3" && keep.Method != "ssh" {
 			keep.Community = ""
 			if strings.TrimSpace(o.User) == "" {
 				return errors.New("SNMPv3 için kullanıcı adı zorunlu")
@@ -427,6 +481,11 @@ func validateOptions(typ string, o *probe.Options) error {
 		keep = probe.Options{Server: o.Server, Record: strings.ToUpper(o.Record), Expect: o.Expect}
 	case "tcp", "udp":
 		keep = probe.Options{Send: o.Send, Expect: o.Expect}
+	case "trace":
+		if o.DSCP < 0 || o.DSCP > 63 {
+			return errors.New("DSCP değeri 0-63 arasında olmalı")
+		}
+		keep = probe.Options{DSCP: o.DSCP}
 	}
 	if len(keep.Send) > 1024 || len(keep.Expect) > 200 {
 		return errors.New("gönderilecek metin en fazla 1024, beklenen metin en fazla 200 karakter olabilir")
@@ -449,14 +508,16 @@ func splitHostPort(s string) (string, string, error) {
 // POST /api/probes: asset_id verilirse mevcut asset'e, asset_name verilirse (yoksa oluşturularak, lisansa sayılır) bağlanır.
 func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	var req struct {
-		AssetID     int64  `json:"asset_id"`
-		AssetName   string `json:"asset_name"`
-		AssetKind   string `json:"asset_kind"`
-		Language    string `json:"language"`
-		Type        string `json:"type"`
-		Target      string `json:"target"`
-		IntervalSec int    `json:"interval_sec"`
-		TimeoutMS   int    `json:"timeout_ms"`
+		AssetID   int64  `json:"asset_id"`
+		AssetName string `json:"asset_name"`
+		AssetKind string `json:"asset_kind"`
+		// Genel bakışta Makineler bölümünde göster (yalnızca host probe'lar için anlamlı; verilmezse asset'in mevcut ayarı korunur).
+		ShowOverview *bool  `json:"show_overview"`
+		Language     string `json:"language"`
+		Type         string `json:"type"`
+		Target       string `json:"target"`
+		IntervalSec  int    `json:"interval_sec"`
+		TimeoutMS    int    `json:"timeout_ms"`
 		// Yalnızca type=http için
 		HTTPMethod      string            `json:"http_method"`
 		Headers         map[string]string `json:"headers"`
@@ -475,6 +536,10 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		return
 	}
 	if err := validateOptions(req.Type, &req.Options); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	if err := s.checkSSHOptions(r.Context(), a.TenantID, req.Type, req.Options); err != nil {
 		fail(w, 400, err.Error())
 		return
 	}
@@ -524,6 +589,14 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, 400, "interval_sec en az 5, timeout_ms 100 ile 60000 arasında olmalı")
 		return
 	}
+	if q, err := s.quotasOf(r.Context(), a.TenantID); err == nil && req.IntervalSec < q.MinInterval {
+		fail(w, 400, fmt.Sprintf("bu kiracıda en kısa probe aralığı %d sn", q.MinInterval))
+		return
+	}
+	if err := s.probeQuotaOK(r.Context(), a.TenantID, 1); err != nil {
+		fail(w, http.StatusPaymentRequired, err.Error())
+		return
+	}
 	headersJSON, _ := json.Marshal(req.Headers)
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -541,7 +614,7 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		kind := req.AssetKind
 		if kind == "" {
-			kind = map[string]string{"http": "website", "tcp": "service", "postgres": "database", "icmp": "host", "snmp": "network", "host": "host", "dns": "service", "tls": "website", "udp": "service", "ntp": "service"}[req.Type]
+			kind = map[string]string{"http": "website", "tcp": "service", "postgres": "database", "pgstats": "database", "icmp": "host", "snmp": "network", "snmpx": "network", "trace": "network", "host": "host", "dns": "service", "tls": "website", "udp": "service", "ntp": "service"}[req.Type]
 		}
 		if !validKind(kind) {
 			fail(w, 400, "asset_kind geçersiz")
@@ -558,6 +631,9 @@ func (s *Server) createProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 		if req.AssetKind != "" { // açıkça seçilen tür, var olan asset için de geçerlidir
 			tx.ExecContext(r.Context(), `UPDATE assets SET kind = $1 WHERE id = $2 AND tenant_id = $3`, req.AssetKind, assetID, a.TenantID)
+		}
+		if req.ShowOverview != nil {
+			tx.ExecContext(r.Context(), `UPDATE assets SET show_overview = $1 WHERE id = $2 AND tenant_id = $3`, *req.ShowOverview, assetID, a.TenantID)
 		}
 	} else {
 		var one int
@@ -774,7 +850,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request, a Auth) {
 	rows, err := s.DB.QueryContext(r.Context(),
 		`SELECT al.id, r.name, r.severity, a.name, r.metric, r.comparator, r.threshold, al.value, al.opened_at, al.resolved_at, al.ack_by, al.ack_at, al.ack_note, al.silenced, a.id
 		 FROM alerts al JOIN alert_rules r ON r.id = al.rule_id JOIN assets a ON a.id = al.asset_id
-		 WHERE al.tenant_id = $1 AND al.state = $2 ORDER BY al.opened_at DESC LIMIT 200`, a.TenantID, state)
+		 WHERE al.tenant_id = $1 AND al.state = $2 ORDER BY al.opened_at DESC LIMIT 1000`, a.TenantID, state)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -818,8 +894,19 @@ func (s *Server) getLicense(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM assets WHERE tenant_id = $1`, a.TenantID).Scan(&used)
 	out := map[string]any{"mode": mode, "asset_limit": limit, "assets_used": used}
+	if q, err := s.quotasOf(r.Context(), a.TenantID); err == nil {
+		var probes, users int
+		s.DB.QueryRowContext(r.Context(), `SELECT (SELECT count(*) FROM probes WHERE tenant_id = $1), (SELECT count(*) FROM users WHERE tenant_id = $1)`, a.TenantID).Scan(&probes, &users)
+		out["quotas"], out["probes_used"], out["users_used"] = q, probes, users
+	}
 	if validUntil.Valid {
 		out["valid_until"] = validUntil.Time
+	}
+	var lid, lcust string
+	var lat sql.NullTime
+	s.DB.QueryRowContext(r.Context(), `SELECT lic_id, lic_customer, lic_issued_at FROM licenses WHERE tenant_id = $1`, a.TenantID).Scan(&lid, &lcust, &lat)
+	if lid != "" {
+		out["signed"] = map[string]any{"id": lid, "customer": lcust, "issued_at": lat.Time}
 	}
 	writeJSON(w, 200, out)
 }
@@ -838,6 +925,10 @@ func (s *Server) putLicense(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, 400, "asset_limit geçersiz")
 		return
 	}
+	if s.licensed(r.Context(), a.TenantID) {
+		fail(w, 409, "bu kiracının lisansı imzalı .lic dosyasıyla yönetiliyor; yeni bir lisans dosyası yükleyin")
+		return
+	}
 	if _, err := s.DB.ExecContext(r.Context(),
 		`UPDATE licenses SET asset_limit = $2, valid_until = $3, updated_at = now() WHERE tenant_id = $1`,
 		a.TenantID, req.AssetLimit, req.ValidUntil); err != nil {
@@ -851,7 +942,7 @@ func (s *Server) putLicense(w http.ResponseWriter, r *http.Request, a Auth) {
 // ---- API anahtarları ----
 
 func (s *Server) listKeys(w http.ResponseWriter, r *http.Request, a Auth) {
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, label, role, created_at FROM api_keys WHERE tenant_id = $1 ORDER BY id`, a.TenantID)
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id, label, role, created_at FROM api_keys WHERE tenant_id = $1 AND user_id IS NULL ORDER BY id`, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -903,8 +994,8 @@ func (s *Server) deleteKey(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	// Son yönetici anahtarının silinmesi sistemi yönetilemez bırakır.
 	res, err := s.DB.ExecContext(r.Context(),
-		`DELETE FROM api_keys k WHERE k.id = $1 AND k.tenant_id = $2
-		   AND (k.role <> 'admin' OR EXISTS (SELECT 1 FROM api_keys o WHERE o.tenant_id = $2 AND o.role = 'admin' AND o.id <> k.id))`, id, a.TenantID)
+		`DELETE FROM api_keys k WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id IS NULL
+		   AND (k.role <> 'admin' OR EXISTS (SELECT 1 FROM api_keys o WHERE o.tenant_id = $2 AND o.role = 'admin' AND o.user_id IS NULL AND o.id <> k.id))`, id, a.TenantID)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -919,9 +1010,48 @@ func (s *Server) deleteKey(w http.ResponseWriter, r *http.Request, a Auth) {
 
 // ---- Denetim günlüğü ----
 
+// listAudit denetim günlüğünü süzer: actor / action (tam eşleşme), q (ayrıntı veya işlemde arama), from / to (RFC3339), limit (en çok 1000), offset (sayfalama).
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, a Auth) {
+	q := r.URL.Query()
+	args := []any{a.TenantID}
+	where := "tenant_id = $1"
+	add := func(cond string, v any) {
+		args = append(args, v)
+		where += " AND " + fmt.Sprintf(cond, len(args))
+	}
+	if v := q.Get("actor"); v != "" {
+		add("actor = $%d", v)
+	}
+	if v := q.Get("action"); v != "" {
+		add("action = $%d", v)
+	}
+	if v := strings.TrimSpace(q.Get("q")); v != "" {
+		if len(v) > 200 {
+			v = v[:200]
+		}
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(v)
+		add("(detail ILIKE $%d OR action ILIKE $%[1]d)", "%"+esc+"%")
+	}
+	for _, f := range []struct{ key, op string }{{"from", ">="}, {"to", "<"}} {
+		if v := q.Get(f.key); v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				fail(w, 400, "geçersiz tarih ("+f.key+")")
+				return
+			}
+			add("at "+f.op+" $%d", t)
+		}
+	}
+	limit := 200
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = min(n, 1000)
+	}
+	offset := 0
+	if n, err := strconv.Atoi(q.Get("offset")); err == nil && n > 0 {
+		offset = min(n, 100000)
+	}
 	rows, err := s.DB.QueryContext(r.Context(),
-		`SELECT actor, action, detail, at FROM audit_log WHERE tenant_id = $1 ORDER BY id DESC LIMIT 200`, a.TenantID)
+		`SELECT actor, action, detail, at FROM audit_log WHERE `+where+` ORDER BY id DESC LIMIT `+strconv.Itoa(limit)+` OFFSET `+strconv.Itoa(offset), args...)
 	if err != nil {
 		fail(w, 500, "veritabanı hatası")
 		return
@@ -936,6 +1066,26 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, a Auth) {
 		}
 	}
 	writeJSON(w, 200, list)
+}
+
+// auditFacets süzgeç listeleri için benzersiz kullanıcı ve işlem adlarını döndürür.
+func (s *Server) auditFacets(w http.ResponseWriter, r *http.Request, a Auth) {
+	col := func(c string) []string {
+		out := []string{}
+		rows, err := s.DB.QueryContext(r.Context(), `SELECT DISTINCT `+c+` FROM audit_log WHERE tenant_id = $1 AND `+c+` <> '' ORDER BY 1 LIMIT 500`, a.TenantID)
+		if err != nil {
+			return out
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v string
+			if rows.Scan(&v) == nil {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	writeJSON(w, 200, map[string][]string{"actors": col("actor"), "actions": col("action")})
 }
 
 // updateProbe kayıtlı bir probe'u değiştirir. Tür ve asset sabittir. Gizli alanlar (başlıklar, gövde, SNMP topluluğu,
@@ -975,6 +1125,7 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, 404, "probe bulunamadı")
 		return
 	}
+	oldTarget := target
 	if req.Target != nil {
 		t := strings.TrimSpace(*req.Target)
 		if t != "" && t != maskTarget(typ, target) { // maskelenmiş hedef değişmedi demektir
@@ -993,6 +1144,10 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	if interval < 5 || timeout < 100 || timeout > 60000 {
 		fail(w, 400, "interval_sec en az 5, timeout_ms 100 ile 60000 arasında olmalı")
+		return
+	}
+	if q, err := s.quotasOf(r.Context(), a.TenantID); err == nil && req.IntervalSec != 0 && interval < q.MinInterval {
+		fail(w, 400, fmt.Sprintf("bu kiracıda en kısa probe aralığı %d sn", q.MinInterval))
 		return
 	}
 	if req.Enabled != nil {
@@ -1042,9 +1197,9 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 	}
 	var opts probe.Options
 	json.Unmarshal(optsRaw, &opts)
-	if req.Options != nil && typ != "http" && typ != "postgres" {
+	if req.Options != nil && typ != "http" && typ != "postgres" && typ != "pgstats" {
 		n := *req.Options
-		if typ == "snmp" || typ == "host" { // boş bırakılan gizli alanlar eski değeri korur
+		if typ == "snmp" || typ == "host" || typ == "snmpx" { // boş bırakılan gizli alanlar eski değeri korur
 			if n.Community == "" {
 				n.Community = opts.Community
 			}
@@ -1061,6 +1216,13 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 		fail(w, 400, err.Error())
 		return
 	}
+	if err := s.checkSSHOptions(r.Context(), a.TenantID, typ, opts); err != nil {
+		fail(w, 400, err.Error())
+		return
+	}
+	if opts.Method == "ssh" && target != oldTarget { // hedef değiştiyse eski sunucu anahtarı geçersizdir
+		opts.HostKey = ""
+	}
 	hj, _ := json.Marshal(headers)
 	oj, _ := json.Marshal(opts)
 	if _, err := s.DB.ExecContext(r.Context(),
@@ -1076,5 +1238,7 @@ func (s *Server) updateProbe(w http.ResponseWriter, r *http.Request, a Auth) {
 
 // me oturum açan anahtarın adını ve rolünü döndürür (arayüz yetkiye göre şekillenir).
 func (s *Server) me(w http.ResponseWriter, r *http.Request, a Auth) {
-	writeJSON(w, 200, map[string]any{"label": a.Label, "role": a.Role, "role_label": RoleLabel(a.Role)})
+	var tname string
+	s.DB.QueryRowContext(r.Context(), `SELECT name FROM tenants WHERE id = $1`, a.TenantID).Scan(&tname)
+	writeJSON(w, 200, map[string]any{"label": a.Label, "role": a.Role, "role_label": RoleLabel(a.Role), "account": a.UserID != 0, "tenant": tname, "platform": a.Platform})
 }
