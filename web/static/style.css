@@ -1052,3 +1052,9 @@ tr.clickable { cursor: pointer; }
 .dr .kv-table th { width: 38%; text-align: left; font-weight: 600; color: var(--muted); vertical-align: top; }
 .dr .kv-table td { word-break: break-word; }
 .dr-body .row { justify-content: flex-start; gap: 10px; }
+
+/* v3.18.0: ayrıntılı yorum hücreleri */
+.insrich { min-width: 300px; max-width: 460px; }
+.insrich > div { margin-top: 4px; }
+.insnote { margin-top: 6px; color: var(--muted); }
+.insnote > div { margin-top: 2px; }

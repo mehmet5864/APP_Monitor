@@ -5489,6 +5489,64 @@
   const SURF_CHANGE = { added: 'Yeni', removed: 'Kayboldu', burst: 'Patlama' };
   const SURF_HEADER = { 'strict-transport-security': 'HSTS', 'content-security-policy': 'CSP', 'x-frame-options': 'X-Frame-Options', 'x-content-type-options': 'X-Content-Type-Options', 'referrer-policy': 'Referrer-Policy' };
 
+  // ---- Ayrıntılı yorum (v3.18.0): "ne oldu / neden önemli / ne yapılmalı". Kural tabanlıdır (sabit metin, yapay zeka çağrısı yok). ----
+  const HDR_WHY = {
+    'strict-transport-security': 'HSTS tarayıcıyı her zaman HTTPS kullanmaya zorlar; kaybolursa bağlantı HTTP\'ye düşürülebilir (SSL strip) ve oturum çerezleri açıkta kalabilir.',
+    'content-security-policy': 'CSP, XSS ve izinsiz script yüklemeyi sınırlar; kaybolursa enjekte edilen script sınırsız çalışabilir.',
+    'x-frame-options': 'Sayfanın başka sitelerde çerçeve içinde gösterilmesini engeller (clickjacking); kaybolursa kullanıcı farkında olmadan tıklatılabilir.',
+    'x-content-type-options': 'Tarayıcının içerik türünü tahmin etmesini (MIME sniffing) engeller; kaybolursa yüklenen dosya script gibi çalıştırılabilir.',
+    'referrer-policy': 'URL\'deki hassas bilginin başka sitelere sızmasını sınırlar; kaybolursa token veya kimlik parametreleri üçüncü taraflara gidebilir.',
+  };
+  const portLabel = (p) => p + (KNOWN_PORTS[p] ? ' (' + KNOWN_PORTS[p] + ')' : '');
+  const MARK = (t) => h('b', { class: 'mono' }, t);
+  // Sapma kaydı için yorum: { cls, head, what, why, todo } (what/why/todo düğüm dizisi).
+  function surfInsight(e) {
+    const cls = SEV_CLS[e.severity] || 'info';
+    const item = e.item || '';
+    const REV = 'Planlı bir değişiklikse "Gözden geçirdim" ile kapatın.';
+    if (e.kind === 'port') {
+      const n = Number(item);
+      if (e.change === 'removed') return { cls, head: 'Port kayboldu', what: ['Daha önce dinleyen port artık yanıt vermiyor: ', MARK(portLabel(n))], why: ['Servis durmuş, çökmüş ya da bilerek kapatılmış olabilir. Beklenmeyen bir kapanışsa hizmet kesintisi demektir.'], todo: ['Servisin çalıştığını doğrulayın (Asset kartı › Yazılım envanteri). ' + REV] };
+      if (RISKY_PORTS.has(n)) return { cls, head: 'Riskli port açıldı', what: ['Yeni dinleyen port: ', MARK(portLabel(n))], why: ['Bu port yönetim, veritabanı veya dosya paylaşımı protokolüdür. Geniş ağa ya da internete açıksa parola deneme, kimlik doğrulamasız erişim ve veri sızıntısı riski vardır.'], todo: ['Gerekmiyorsa servisi durdurun ve güvenlik duvarında kapatın. Gerekiyorsa yalnızca 127.0.0.1 veya özel adrese bağlayın, kaynak IP\'yi kısıtlayın, güçlü kimlik doğrulama ve TLS kullanın.'] };
+      return { cls, head: 'Yeni port', what: ['Yeni dinleyen port: ', MARK(portLabel(n))], why: ['Daha önce kapalı olan bir port açıldı. Planlanmamış bir servis, kurulum artığı ya da yetkisiz bir süreç olabilir.'], todo: ['Hangi sürecin açtığını Yazılım envanteri sekmesinden bulun. Tanıyorsanız ve gerekliyse "Gözden geçirdim" ile kapatın; tanımıyorsanız süreci durdurup portu kapatın.'] };
+    }
+    if (e.kind === 'endpoint') {
+      const risky = ['admin', 'debug', 'actuator', 'phpmyadmin', '.env', '.git', 'swagger', 'console', 'backup', 'wp-login', 'shell', 'manager'].some((w) => item.toLowerCase().includes(w));
+      if (risky) return { cls, head: 'Riskli uç nokta', what: ['Daha önce görülmemiş yola istek geldi: ', MARK(item)], why: ['Yönetim, hata ayıklama veya yedek yolları saldırı taramalarının ilk hedefidir; açıksa kimlik doğrulamayı aşma, yapılandırma/kaynak kodu sızıntısı ve sunucu ele geçirme riski taşır.'], todo: ['Yolu dışarıdan kapatın (IP kısıtı, VPN, kimlik doğrulama). Üretimde debug/actuator/swagger uç noktalarını devre dışı bırakın. Erişim günlüğünde isteğin kaynağına bakın.'] };
+      return { cls, head: 'Yeni uç nokta', what: ['Daha önce görülmemiş yola istek geldi: ', MARK(item)], why: ['Yeni bir özellik yayınlanmış olabilir; ya da biri uygulamayı yoklayıp var olmayan/gizli yolları deniyor olabilir.'], todo: ['Son sürüm yayınlarıyla eşleştirin. Eşleşmiyorsa erişim günlüğünde kaynak IP\'ye bakın ve tekrarlıyorsa engelleyin. ' + REV] };
+    }
+    if (e.kind === 'tls') {
+      if (e.change === 'removed') return { cls, head: 'TLS sürümü kalktı', what: ['Artık görülmeyen TLS sürümü: ', MARK(item)], why: ['Sunucu bu sürümü artık sunmuyor. Eski bir sürümse bu bir iyileşmedir.'], todo: ['İşlem gerekmez; "Gözden geçirdim" ile kapatın.'] };
+      if (item === 'TLS 1.0' || item === 'TLS 1.1') return { cls, head: 'Eski TLS sürümü', what: ['Sunucu eski TLS sürümünü kabul ediyor: ', MARK(item)], why: ['TLS 1.0/1.1 bilinen zayıflıklar taşır, PCI-DSS dahil çoğu standartta yasaktır ve trafiğin çözülmesine ya da sürüm düşürme saldırısına olanak verir.'], todo: ['Sunucuda ve önündeki yük dengeleyici/ters vekilde yalnızca TLS 1.2 ve 1.3\'ü etkinleştirin.'] };
+      return { cls, head: 'TLS sürümü değişti', what: ['Bağlantıda görülen TLS sürümü değişti: ', MARK(item)], why: ['Sürümün düşmesi yapılandırmanın geri alındığını, yük dengeleyicinin değiştiğini ya da sürüm düşürme saldırısını gösterebilir.'], todo: ['Son yapılandırma değişikliklerine bakın ve TLS 1.3\'ün etkin olduğunu doğrulayın. ' + REV] };
+    }
+    if (e.kind === 'header') {
+      const nm = SURF_HEADER[item] || item;
+      if (e.change === 'removed') return { cls, head: 'Güvenlik başlığı kayboldu', what: ['Yanıttan şu başlık kayboldu: ', MARK(nm)], why: [HDR_WHY[item] || 'Bu güvenlik başlığı yanıtlarda artık görünmüyor; korumalar zayıflamış olabilir.'], todo: ['Başlığı ters vekil/uygulama yapılandırmasına geri ekleyin. Son dağıtımı veya CDN/WAF değişikliğini kontrol edin.'] };
+      return { cls, head: 'Güvenlik başlığı eklendi', what: ['Yanıtlara yeni başlık eklendi: ', MARK(nm)], why: ['Güvenlik duruşu iyileşmiş görünüyor.'], todo: ['İşlem gerekmez; "Gözden geçirdim" ile kapatın.'] };
+    }
+    if (e.kind === 'banner') return { cls, head: 'Sunucu bilgisi değişti', what: ['Sunucu yazılım/sürüm bilgisi (banner) değişti', ...(e.detail ? [': ', MARK(e.detail)] : [])], why: ['Banner sürüm bilgisini ifşa eder; saldırganlar sürüme özgü açıkları arar. Değişim bir yazılım güncellemesi ya da yeni bir sunucu olabilir.'], todo: ['Beklenen bir güncelleme olup olmadığını doğrulayın. Sürüm bilgisini gizleyin (ör. nginx server_tokens off, Apache ServerTokens Prod).'] };
+    if (e.kind === 'scan') return { cls, head: 'Tarama izi', what: ['Kısa sürede çok sayıda 4xx (bulunamadı/yasak) yanıtı üretildi', ...(e.detail ? [': ', MARK(e.detail)] : [])], why: ['Bu desen çoğunlukla otomatik dizin/uç nokta taramasıdır (bot, zafiyet tarayıcısı); bozuk bir istemci de olabilir. Genellikle saldırıdan önceki keşif adımıdır.'], todo: ['Erişim günlüğünde kaynak IP\'leri bulun. Tekrarlıyorsa WAF/hız sınırı/IP engeli uygulayın ve Güvenlik sekmesinde riskli uç noktalara bakın.'] };
+    return { cls, head: 'Sapma', what: [SURF_KIND[e.kind] || e.kind, ': ', MARK(item)], why: ['Referanstan farklı bir değişiklik gözlendi.'], todo: ['Beklenen bir değişiklikse "Gözden geçirdim" ile kapatın; değilse inceleyin.'] };
+  }
+  // Referans durumu (asset başına öğrenilmiş yüzey) için yorum.
+  function baseInsight(b) {
+    const ports = (b.ports || []).map(Number), tl = b.tlss || [], hd = b.headers || [];
+    const risky = ports.filter((p) => RISKY_PORTS.has(p));
+    const oldTls = tl.filter((x) => x === 'TLS 1.0' || x === 'TLS 1.1');
+    const web = tl.length || hd.length;
+    const missing = web ? Object.keys(SURF_HEADER).filter((k) => !hd.includes(k)) : [];
+    if (risky.length) return { cls: 'down', head: 'Riskli port referansta', what: ['Referans olarak öğrenilen portlar arasında riskli olanlar var: ', MARK(risky.map(portLabel).join(', '))], why: ['İlk gözlem referans sayıldığı için bu portlar sapma üretmez; yani risk sessizce normal kabul edilmiş olabilir.'], todo: ['Bu portlar gerçekten gerekli mi kontrol edin; değilse kapatın, gerekiyorsa erişimi kısıtlayın. Referansı sıfırlamak yüzeyi yeniden öğretir.'] };
+    if (oldTls.length) return { cls: 'down', head: 'Eski TLS referansta', what: ['Referansta eski TLS sürümü var: ', MARK(oldTls.join(', '))], why: ['Eski sürüm baştan normal sayıldığı için sapma olarak uyarmaz; oysa zayıf ve standartlara aykırıdır.'], todo: ['Sunucuda yalnızca TLS 1.2 ve 1.3\'ü etkinleştirin, ardından referansı sıfırlayın.'] };
+    if (missing.length) return { cls: 'warning', head: 'Eksik güvenlik başlığı', what: ['Hiç görülmeyen başlıklar: ', MARK(missing.map((k) => SURF_HEADER[k]).join(', '))], why: ['Başlık hiç görülmediği için kaybı sapma sayılmaz; eksik başlık XSS, clickjacking veya SSL strip gibi saldırılara açıklık bırakır.'], todo: ['Eksik başlıkları ters vekil veya uygulama yapılandırmasına ekleyin.'] };
+    if (!ports.length && !web && !b.endpoints) return { cls: 'unknown', head: 'Veri yok', what: ['Bu asset için öğrenilmiş yüzey öğesi yok.'], why: ['Referans olmadan sapma tespit edilemez.'], todo: ['Port için SSH probe veya ajan, TLS/başlıklar için HTTPS probe\'u, uç noktalar için erişim günlüğü ekleyin.'] };
+    if (!web && ports.length) return { cls: 'info', head: 'Web yüzeyi öğrenilmedi', what: [ports.length + ' port öğrenildi; TLS ve başlık verisi yok.'], why: ['Web yüzeyindeki TLS düşürme ve başlık kaybı sapmaları izlenmiyor.'], todo: ['Bu asset web hizmeti sunuyorsa HTTPS probe\'u ekleyin.'] };
+    return { cls: 'up', head: 'Makul', what: [ports.length + ' port, ' + tl.length + ' TLS sürümü, ' + hd.length + ' güvenlik başlığı, ' + (b.endpoints || 0) + ' uç nokta öğrenildi.'], why: ['Riskli port, eski TLS veya eksik başlık görünmüyor.'], todo: ['Planlı değişikliklerden sonra sapmaları gözden geçirin.'] };
+  }
+  // Zengin yorum hücresi: rozet + üç satır.
+  const richCell = (ins) => h('td', { class: 'small timing-note insrich' }, pill(ins.cls, ins.head),
+    h('div', null, h('b', null, 'Ne oldu: '), ins.what), h('div', null, h('b', null, 'Neden önemli: '), ins.why), h('div', null, h('b', null, 'Ne yapılmalı: '), ins.todo));
+
   async function yuzeyDrift() {
     const [ev, base] = await Promise.all([api('/api/surface/events?state=' + (SURF.all ? 'all' : 'open')), api('/api/surface/baseline')]);
     const msg = h('p', { class: 'msg', role: 'status' });
@@ -5500,7 +5558,7 @@
     const rows = ev.events.map((e) => h('tr', { class: e.reviewed ? 'off' : '' },
       h('td', null, pill(e.severity, SEV[e.severity])), h('td', null, e.asset), h('td', null, SURF_KIND[e.kind] || e.kind),
       h('td', { class: 'mono' }, SURF_HEADER[e.item] || e.item, e.detail ? h('div', { class: 'muted small' }, e.detail) : null),
-      h('td', null, SURF_CHANGE[e.change] || e.change), h('td', { class: 'mono small' }, ago(e.at)),
+      h('td', null, SURF_CHANGE[e.change] || e.change), h('td', { class: 'mono small' }, ago(e.at)), richCell(surfInsight(e)),
       h('td', null, e.reviewed ? h('span', { class: 'small muted' }, 'Gözden geçirildi: ' + e.reviewed_by + (e.note ? ' — ' + e.note : '')) : canWrite() ? h('button', { type: 'button', class: 'small', onclick: () => review(e) }, 'Gözden geçirdim') : '')));
     const allBox = h('input', { type: 'checkbox' });
     allBox.checked = SURF.all;
@@ -5513,16 +5571,16 @@
       h('td', { class: 'mono small' }, (b.ports || []).join(', ') || '—'),
       h('td', { class: 'mono small' }, (b.tlss || []).join(', ') || '—'),
       h('td', { class: 'small' }, (b.headers || []).map((x) => SURF_HEADER[x] || x).join(', ') || '—'),
-      h('td', { class: 'mono' }, String(b.endpoints || 0)),
+      h('td', { class: 'mono' }, String(b.endpoints || 0)), richCell(baseInsight(b)),
       h('td', null, canWrite() ? resetBtn(b) : '')));
     return h('div', { class: 'stack' },
       h('p', { class: 'muted small' }, 'Normal izleme verisinden bir referans öğrenilir; sonradan ortaya çıkan yeni dinleyen port, görülmemiş uç nokta, TLS düşürme, güvenlik başlığı kaybı ve 4xx patlaması (tarama izi) sapma olarak listelenir. Hiçbir tarama veya saldırı denemesi yapılmaz: yalnızca zaten toplanan veri kullanılır.'),
       h('div', { class: 'kpis' }, kpi('Gözden geçirilmemiş', String(ev.open), 'sapma', null, ev.open ? 'warn' : ''), kpi('Kritik', String(ev.critical), 'sapma', null, ev.critical ? 'bad' : '')),
       msg,
       h('div', { class: 'row' }, h('h3', null, 'Sapmalar'), h('label', { class: 'small surf-all' }, allBox, ' gözden geçirilenleri de göster')),
-      table(['Önem', 'Asset', 'Tür', 'Öğe', 'Değişim', 'Zaman', ''], rows, 'Referanstan sapma yok.', PAGE),
+      table(['Önem', 'Asset', 'Tür', 'Öğe', 'Değişim', 'Zaman', 'Yorum', ''], rows, 'Referanstan sapma yok.', PAGE),
       h('h3', null, 'Referans durum'),
-      table(['Asset', 'Dinleyen portlar', 'TLS', 'Güvenlik başlıkları', 'Uç nokta sayısı', ''], brow,
+      table(['Asset', 'Dinleyen portlar', 'TLS', 'Güvenlik başlıkları', 'Uç nokta sayısı', 'Yorum', ''], brow,
         'Henüz referans yok. SSH ile izlenen makineler (portlar), HTTPS probe\'ları (TLS, başlıklar) ve erişim günlüğü (uç noktalar) geldikçe oluşur.', PAGE),
       h('p', { class: 'muted small' }, 'İlk gözlem referans olur (sapma sayılmaz). Uç noktalar yeni bir uygulama için 24 saat öğrenilir. Planlı bir değişiklikten sonra sapmayı "Gözden geçirdim" ile kapatın; referans zaten yeni durumu içerir. Alarm istiyorsanız Alarmlar › şablonlardan "Saldırı yüzeyi sapması" kuralını ekleyin (surface.drift > 0).'));
   }
@@ -6023,15 +6081,35 @@
     const ia = inv && inv.assets ? inv.assets.find((x) => x.asset_id === id) : null;
     const drift = sev && sev.events ? sev.events.filter((e) => e.asset_id === id) : [];
     const impacted = imp ? imp.impacted : [], deps = imp ? imp.dependencies : [];
-    const crit = mine.filter((x) => x.severity === 'critical').length;
-    let ins;
-    if (a.status === 'down' || a.status === 'offline') ins = { cls: 'down', head: STATUS[a.status], text: `Son veri ${ago(a.last_seen)}. ${impacted.length ? impacted.length + ' asset bu varlığa bağımlı; kesinti onları da etkileyebilir. ' : ''}Topoloji sekmesinden bağlantıları, Olaylar sekmesinden alarm geçmişini inceleyin.` };
-    else if (crit) ins = { cls: 'down', head: 'Kritik alarm', text: `${crit} kritik alarm açık: ${mine.filter((x) => x.severity === 'critical').slice(0, 2).map((x) => x.rule).join(', ')}. Olaylar sekmesinde ayrıntı ve kök neden var.` };
-    else if (ia && ia.critical) ins = { cls: 'down', head: 'Kritik zafiyet', text: `${ia.critical} kritik zafiyetli bağımlılık kullanılıyor; Yazılım envanteri sekmesinde düzeltme sürümleri var.` };
-    else if (a.status === 'degraded' || mine.length) ins = { cls: 'warning', head: a.status === 'degraded' ? 'Kısmen erişilemiyor' : 'Açık alarm', text: `${mine.length} açık alarm var. Performans sekmesinde eğilime, Olaylar sekmesinde zaman çizelgesine bakın.` };
-    else if (drift.length) ins = { cls: 'warning', head: 'Saldırı yüzeyi sapması', text: `${drift.length} gözden geçirilmemiş sapma var (yeni port, uç nokta vb.). Güvenlik sekmesine bakın.` };
-    else if (ia && ia.eol_count) ins = { cls: 'warning', head: 'Destek dışı sürüm', text: `${ia.eol_count} servis/çalışma zamanı üretici desteği bitmiş sürümde.` };
-    else ins = { cls: 'up', head: 'Sağlıklı', text: 'Açık alarm, kritik zafiyet veya saldırı yüzeyi sapması görünmüyor.' };
+    // Kritik/Uyarı nedenleri: her etken ayrı satır; "neden" + "önerilen çözüm" + ilgili sekmeye bağlantı (v3.18.0).
+    const R = [];
+    const add = (sev, head, why, todo, tab) => R.push({ sev, head, why, todo, tab });
+    const names = (arr, f) => [...new Set(arr.map(f))].slice(0, 3).join(', ');
+    const critAl = mine.filter((x) => x.severity === 'critical'), otherAl = mine.filter((x) => x.severity !== 'critical');
+    const exposedRisky = ia ? ia.listeners.filter((l) => l.scope === 'net' && RISKY_PORTS.has(l.port)) : [];
+    const failProbes = myProbes.filter((p) => p.enabled && p.last_error), failScen = myScen.filter((x) => x.enabled && x.last_error);
+    const driftCrit = drift.filter((e) => e.severity === 'critical'), driftOther = drift.filter((e) => e.severity !== 'critical');
+    if (a.status === 'down' || a.status === 'offline') add('critical', STATUS[a.status], ['Son veri ', ago(a.last_seen), '.', impacted.length ? ` ${impacted.length} asset bu varlığa bağımlı; kesinti onları da etkileyebilir.` : ''], 'Ajanın veya servisin çalıştığını, ağ bağlantısını ve güvenlik duvarını kontrol edin; ajan kullanıyorsanız servisi yeniden başlatın. Bağımlı asset\'ler için Topoloji sekmesine bakın.', 'topoloji');
+    else if (a.status === 'degraded') add('warning', STATUS.degraded, 'Bu varlığın bazı probe veya senaryoları başarısız.', 'İzleyiciler tablosunda hatalı olanı bulun; hedefe erişimi, kimlik bilgilerini ve güvenlik duvarını kontrol edin.', 'performans');
+    if (critAl.length) add('critical', 'Kritik alarm', [`${critAl.length} kritik alarm açık: `, MARK(names(critAl, (x) => x.rule))], 'Olaylar sekmesinde alarmın değerine ve zaman çizelgesine bakın, kök nedeni giderin; üzerinde çalışılıyorsa alarmı üstlenin (acknowledge).', 'olaylar');
+    if (otherAl.length) add('warning', 'Açık alarm', [`${otherAl.length} açık alarm var: `, MARK(names(otherAl, (x) => x.rule))], 'Performans sekmesinde eğilime, Olaylar sekmesinde zaman çizelgesine bakın; eşik gereksizse alarm kuralını gözden geçirin.', 'olaylar');
+    if (ia && ia.critical) add('critical', 'Kritik zafiyet', `${ia.critical} kritik zafiyetli bağımlılık kullanılıyor; bilinen açıklar uzaktan istismar edilebilir.`, 'Yazılım envanteri sekmesinde her zafiyetin "Düzeltme" sürümüne bağımlılığı güncelleyin, uygulamayı yeniden dağıtın ve envanterin yenilenmesini bekleyin.', 'yazilim');
+    else if (ia && ia.high) add('warning', 'Yüksek önemde zafiyet', `${ia.high} yüksek önemde zafiyet var.`, 'Bağımlılık güncellemesi planlayın; düzeltme sürümleri Yazılım envanteri sekmesinde.', 'yazilim');
+    if (exposedRisky.length) add('critical', 'Riskli port açık', [MARK(exposedRisky.map((l) => portLabel(l.port)).join(', ')), ' ağdan erişilebiliyor; parola deneme ve yetkisiz erişim riski taşır.'], 'Gerekmiyorsa servisi durdurup güvenlik duvarında kapatın; gerekiyorsa yalnızca özel adrese bağlayıp kaynak IP\'yi kısıtlayın ve güçlü kimlik doğrulama kullanın.', 'guvenlik');
+    if (ia && ia.eol_count) add('warning', 'Destek dışı sürüm', `${ia.eol_count} servis/çalışma zamanı üreticisinin güvenlik yamasını artık yayımlamıyor; bilinen açıklar kapatılmaz.`, 'Desteklenen bir sürüme geçiş planlayın (Yazılım envanteri sekmesinde hangi servis olduğu ve destek tarihi var).', 'yazilim');
+    if (driftCrit.length) add('critical', 'Kritik saldırı yüzeyi sapması', [`${driftCrit.length} kritik sapma gözden geçirilmedi: `, MARK(names(driftCrit, (e) => (SURF_KIND[e.kind] || e.kind) + ' ' + (SURF_HEADER[e.item] || e.item)))], 'Güvenlik sekmesinde her sapmanın yorumunu okuyun (ne oldu, neden önemli, ne yapılmalı); planlıysa "Gözden geçirdim" ile kapatın, değilse yüzeyi kapatın.', 'guvenlik');
+    if (driftOther.length) add('warning', 'Saldırı yüzeyi sapması', [`${driftOther.length} gözden geçirilmemiş sapma var: `, MARK(names(driftOther, (e) => (SURF_KIND[e.kind] || e.kind) + ' ' + (SURF_HEADER[e.item] || e.item)))], 'Güvenlik sekmesindeki yorumlara bakın; planlı değişiklikse "Gözden geçirdim" ile kapatın.', 'guvenlik');
+    if (failProbes.length) add('warning', 'Probe hatası', [`${failProbes.length} probe hata veriyor: `, MARK(names(failProbes, (p) => p.type + ' ' + p.target)), '. Son hata: ', failProbes[0].last_error], 'Hedefe ağ erişimini, kimlik bilgilerini ve güvenlik duvarını kontrol edin; hedef kapalıysa probe\'u durdurun.', 'genel');
+    if (failScen.length) add('warning', 'Senaryo hatası', [`${failScen.length} senaryo başarısız: `, MARK(names(failScen, (x) => x.name)), '. Son hata: ', failScen[0].last_error], 'Senaryo adımlarını ve ekran görüntüsünü kontrol edin; sayfa değiştiyse senaryoyu güncelleyin.', 'olaylar');
+    if (slaRow && slaRow.met === false) add('warning', 'SLA hedefi tutmuyor', `Erişilebilirlik %${slaRow.availability_pct != null ? slaRow.availability_pct.toFixed(2) : '—'}, hedef %${slaRow.target_pct}.`, 'Olaylar sekmesinde kesinti nedenlerini bulun; tekrarlayan kesintiler için kök neden çalışması yapın.', 'olaylar');
+    R.sort((x, y) => (y.sev === 'critical') - (x.sev === 'critical'));
+    const nCrit = R.filter((x) => x.sev === 'critical').length, nWarn = R.length - nCrit;
+    const ins = nCrit ? { cls: 'down', head: 'Kritik', text: `${nCrit} kritik${nWarn ? ', ' + nWarn + ' uyarı' : ''} nedeni var; nedenler ve önerilen çözümler aşağıda.` }
+      : nWarn ? { cls: 'warning', head: 'Uyarı', text: `${nWarn} uyarı nedeni var; nedenler ve önerilen çözümler aşağıda.` }
+        : { cls: 'up', head: 'Sağlıklı', text: 'Açık alarm, kritik zafiyet, saldırı yüzeyi sapması veya hatalı izleyici görünmüyor.' };
+    const reasons = R.length ? [h('h3', null, `Nedenler ve önerilen çözümler (${R.length})`),
+      table(['Önem', 'Neden', 'Önerilen çözüm', ''], R.map((x) => h('tr', null, h('td', null, pill(SEV_CLS[x.sev], SEV_TXT[x.sev])), h('td', { class: 'small' }, h('b', null, x.head), h('div', null, x.why)), h('td', { class: 'small' }, x.todo),
+        h('td', null, x.tab && x.tab !== 'genel' ? h('button', { type: 'button', class: 'small', onclick: () => { CARD.tab = x.tab; render(); } }, 'Aç') : null))), '', PAGE)] : null;
     const tile = (label, val, sub, tab, tone) => kpi(label, val, sub, null, tone, () => { CARD.tab = tab; render(); });
     const tiles = h('div', { class: 'kpis cardk' },
       tile('Bağımlılık', String(deps.length), deps.length ? deps.slice(0, 2).map((d) => d.name).join(', ') + (deps.length > 2 ? '…' : '') : 'bağlı olduğu asset yok', 'topoloji'),
@@ -6055,7 +6133,7 @@
       h('td', null, !p.enabled ? pill('unknown', 'kapalı') : p.last_error ? pill('down', 'hata') : pill('up', 'tamam')), h('td', { class: 'small' }, p.last_error || ('her ' + p.interval_sec + ' sn · ' + ago(p.last_run))))),
       ...myScen.map((x) => h('tr', null, h('td', null, pill('info', 'senaryo')), h('td', null, h('b', null, x.name)),
         h('td', null, !x.enabled ? pill('unknown', 'kapalı') : x.last_error ? pill('down', 'hata') : pill('up', 'tamam')), h('td', { class: 'small' }, x.last_error || ('her ' + x.interval_sec + ' sn'))))];
-    return h('div', { class: 'stack' }, h('div', { class: 'panel timing-note' }, pill(ins.cls, ins.head), h('div', null, ins.text)), tiles,
+    return h('div', { class: 'stack' }, h('div', { class: 'panel timing-note' }, pill(ins.cls, ins.head), h('div', null, ins.text)), reasons, tiles,
       h('h3', null, 'Tanım'), h('div', { class: 'panel' }, h('table', { class: 'kv-table' }, h('tbody', null, [...rows, ...labelRows].map(([k, v]) => h('tr', null, h('th', { scope: 'row' }, k), h('td', null, v)))))),
       mon.length ? [h('h3', null, `İzleyiciler (${mon.length})`), table(['Tür', 'Hedef', 'Durum', 'Ayrıntı'], mon, '', PAGE)] : h('p', { class: 'muted small' }, 'Bu asset için probe veya senaryo tanımlı değil.'),
       h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => assetDialog(a) }, 'Ayar penceresi (genel bakışta göster, disk ayrıntısı)')));
@@ -6161,7 +6239,7 @@
     if (open.some((e) => e.severity === 'critical') || risky.length || (ia && ia.critical)) ins = { cls: 'down', head: 'Acil inceleme', text: [open.filter((e) => e.severity === 'critical').length ? `${open.filter((e) => e.severity === 'critical').length} kritik sapma` : null, risky.length ? `riskli port açık (${risky.map((l) => l.port).join(', ')})` : null, ia && ia.critical ? `${ia.critical} kritik zafiyet` : null].filter(Boolean).join(', ') + '.' };
     else if (open.length || (ia && (ia.eol_count || ia.high)) || (cert != null && cert < 14)) ins = { cls: 'warning', head: 'Dikkat', text: [open.length ? `${open.length} açık sapma` : null, ia && ia.eol_count ? `${ia.eol_count} destek dışı sürüm` : null, ia && ia.high ? `${ia.high} yüksek zafiyet` : null, cert != null && cert < 14 ? `sertifikanın bitimine ${Math.floor(cert)} gün` : null].filter(Boolean).join(', ') + '.' };
     else ins = { cls: 'up', head: 'Temiz', text: ia || bl ? 'Açık sapma, riskli port veya kritik zafiyet görünmüyor.' : 'Henüz referans veya envanter verisi yok; ilk gözlemler referans olur.' };
-    const evRows = events.slice(0, 50).map((e) => h('tr', null, h('td', null, pill(SEV_CLS[e.severity] || 'info', SEV_TXT[e.severity] || e.severity)), h('td', null, SURF_KIND[e.kind] || e.kind), h('td', { class: 'mono small' }, e.item), h('td', { class: 'small' }, SURF_CHANGE[e.change] || e.change, e.detail ? h('div', { class: 'muted' }, e.detail) : null), h('td', { class: 'small' }, ago(e.at)), h('td', null, e.reviewed ? pill('up', 'gözden geçirildi') : pill('warning', 'Açık'))));
+    const evRows = events.slice(0, 50).map((e) => h('tr', null, h('td', null, pill(SEV_CLS[e.severity] || 'info', SEV_TXT[e.severity] || e.severity)), h('td', null, SURF_KIND[e.kind] || e.kind), h('td', { class: 'mono small' }, e.item), h('td', { class: 'small' }, SURF_CHANGE[e.change] || e.change, e.detail ? h('div', { class: 'muted' }, e.detail) : null), h('td', { class: 'small' }, ago(e.at)), richCell(surfInsight(e)), h('td', null, e.reviewed ? pill('up', 'gözden geçirildi') : pill('warning', 'Açık'))));
     const blRows = bl ? Object.entries(bl).filter(([k, v]) => k !== 'asset' && k !== 'asset_id' && (Array.isArray(v) ? v.length : v)).map(([k, v]) => h('tr', null, h('td', null, SURF_KIND[k.replace(/s$/, '')] || k), h('td', { class: 'mono small' }, Array.isArray(v) ? v.join(', ') : String(v)))) : [];
     return h('div', { class: 'stack' }, h('div', { class: 'panel timing-note' }, pill(ins.cls, ins.head), h('div', null, ins.text)),
       h('div', { class: 'kpis cardk' }, kpi('Açık sapma', String(open.length), 'gözden geçirilmemiş', null, open.some((e) => e.severity === 'critical') ? 'bad' : open.length ? 'warn' : ''),
@@ -6169,7 +6247,7 @@
         kpi('Zafiyet', ia ? String(ia.vuln_total) : '—', ia ? `${ia.critical} kritik · ${ia.high} yüksek` : 'envanter yok', null, ia && ia.critical ? 'bad' : ia && ia.high ? 'warn' : '', () => { CARD.tab = 'yazilim'; render(); }),
         cert != null ? kpi('Sertifika', Math.floor(cert) + ' gün', 'kalan süre', null, cert < 3 ? 'bad' : cert < 14 ? 'warn' : '') : null),
       exposed.length ? [h('h3', null, 'Ağdan erişilebilen servisler'), table(['Port', 'Süreç', 'Sürüm', 'Destek'], exposed.map((l) => h('tr', null, h('td', { class: 'mono' }, String(l.port), RISKY_PORTS.has(l.port) ? [' ', pill('down', 'riskli')] : null, KNOWN_PORTS[l.port] ? h('div', { class: 'muted small' }, KNOWN_PORTS[l.port]) : null), h('td', null, l.proc), h('td', { class: 'mono small' }, l.runtime ? (RT_LABEL[l.runtime] || l.runtime) + (l.version && l.version !== 'unknown' ? ' ' + l.version : '') : '—'), h('td', null, eolPill(l.eol)))), '', PAGE)] : null,
-      h('h3', null, `Sapmalar (${events.length})`), events.length ? table(['Önem', 'Tür', 'Öğe', 'Değişim', 'Zaman', 'Durum'], evRows, '', PAGE) : h('p', { class: 'muted' }, 'Bu asset için sapma kaydı yok.'),
+      h('h3', null, `Sapmalar (${events.length})`), events.length ? table(['Önem', 'Tür', 'Öğe', 'Değişim', 'Zaman', 'Yorum', 'Durum'], evRows, '', PAGE) : h('p', { class: 'muted' }, 'Bu asset için sapma kaydı yok.'),
       blRows.length ? [h('h3', null, 'Öğrenilmiş referans'), table(['Tür', 'Öğeler'], blRows, '', PAGE)] : null,
       h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => goTo('yuzey') }, 'Saldırı yüzeyi sayfasını aç')));
   }
@@ -6180,7 +6258,7 @@
     const items = [];
     for (const x of (open || []).filter((q) => q.asset_id === a.id)) items.push({ t: x.opened_at, kind: 'alarm', sev: x.severity, title: x.rule, text: `${x.metric} ${x.comparator} ${x.threshold} (değer ${fmt(x.value)})`, state: x.ack_by ? 'onaylandı: ' + x.ack_by : 'Açık', cls: SEV_CLS[x.severity] || 'info', id: x.id });
     for (const x of (resolved || []).filter((q) => q.asset_id === a.id).slice(0, 40)) items.push({ t: x.opened_at, kind: 'alarm', sev: x.severity, title: x.rule, text: `${x.metric} ${x.comparator} ${x.threshold}`, state: 'çözüldü ' + ago(x.resolved_at), cls: 'up' });
-    for (const x of ((ev && ev.events) || []).filter((q) => q.asset_id === a.id).slice(0, 40)) items.push({ t: x.at, kind: 'Sapma kaydı', sev: x.severity, title: (SURF_KIND[x.kind] || x.kind) + ': ' + x.item, text: (SURF_CHANGE[x.change] || x.change) + (x.detail ? ' — ' + x.detail : ''), state: x.reviewed ? 'gözden geçirildi' : 'Açık', cls: SEV_CLS[x.severity] || 'info' });
+    for (const x of ((ev && ev.events) || []).filter((q) => q.asset_id === a.id).slice(0, 40)) items.push({ t: x.at, kind: 'Sapma kaydı', sev: x.severity, title: (SURF_KIND[x.kind] || x.kind) + ': ' + x.item, text: (SURF_CHANGE[x.change] || x.change) + (x.detail ? ' — ' + x.detail : ''), state: x.reviewed ? 'gözden geçirildi' : 'Açık', cls: SEV_CLS[x.severity] || 'info', ins: surfInsight(x) });
     for (const x of (scen || []).filter((q) => q.asset_id === a.id)) {
       if (x.last_error) items.push({ t: new Date().toISOString(), kind: 'senaryo', title: x.name, text: x.last_error, state: 'son çalıştırma başarısız', cls: 'down' });
       if (x.last_changed_at) items.push({ t: x.last_changed_at, kind: 'senaryo', title: x.name, text: 'Sayfa yapısı değişti', state: '', cls: 'info' });
@@ -6194,7 +6272,7 @@
     const KINDS = ['hepsi', 'alarm', 'Sapma kaydı', 'senaryo', 'Günlük kayıtları'];
     const st = CARDF; const rows = () => items.filter((i) => st.k === 'hepsi' || i.kind === st.k).slice(0, 200);
     const box = h('div');
-    const draw = () => box.replaceChildren(table(['Zaman', 'Tür', 'Olay', 'Ayrıntı', 'Durum'], rows().map((i) => h('tr', null, h('td', { class: 'small' }, h('div', null, ago(i.t)), h('div', { class: 'muted' }, new Date(i.t).toLocaleString())), h('td', null, pill(i.cls, i.kind)), h('td', null, h('b', null, i.title)), h('td', { class: 'small' }, (i.text || '').slice(0, 220)), h('td', { class: 'small' }, i.state))), 'Bu filtrede olay yok.', PAGE));
+    const draw = () => box.replaceChildren(table(['Zaman', 'Tür', 'Olay', 'Ayrıntı', 'Durum'], rows().map((i) => h('tr', null, h('td', { class: 'small' }, h('div', null, ago(i.t)), h('div', { class: 'muted' }, new Date(i.t).toLocaleString())), h('td', null, pill(i.cls, i.kind)), h('td', null, h('b', null, i.title)), h('td', { class: 'small' }, (i.text || '').slice(0, 220), i.ins ? h('div', { class: 'insnote' }, h('div', null, h('b', null, 'Neden önemli: '), i.ins.why), h('div', null, h('b', null, 'Ne yapılmalı: '), i.ins.todo)) : null), h('td', { class: 'small' }, i.state))), 'Bu filtrede olay yok.', PAGE));
     const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Olay türü' }, KINDS.map((k) => { const b = h('button', { type: 'button', 'aria-pressed': String(st.k === k) }, k === 'hepsi' ? `Hepsi (${items.length})` : `${k[0].toUpperCase() + k.slice(1)} (${items.filter((i) => i.kind === k).length})`); b.addEventListener('click', () => { st.k = k; for (const x of seg.children) x.setAttribute('aria-pressed', String(x === b)); draw(); }); return b; }));
     draw();
     return h('div', { class: 'stack' }, h('p', { class: 'muted small' }, 'Alarmlar, saldırı yüzeyi sapmaları, senaryo olayları ve (günlük saklama açıksa) uyarı/hata günlükleri zaman sırasıyla.' + (logOn === false ? ' Günlük saklama kapalı; günlükler görünmez.' : '')), seg, box,

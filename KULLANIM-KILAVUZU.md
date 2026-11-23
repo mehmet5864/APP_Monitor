@@ -435,6 +435,10 @@ OTLP/HTTP **protobuf** ve **JSON** kabul edilir; gzip (`Content-Encoding: gzip`)
 
 **Alarm ve bildirim:** Gözden geçirilmemiş uyarı/kritik sapma sayısı her dakika `surface.drift` ölçümü olarak yazılır. Alarmlar › şablonlar › *Güvenlik (saldırı yüzeyi)* altındaki kuralı ekleyin (`surface.drift > 0`); alarm mevcut bildirim kanallarına ve SIEM'e gider, sapmalar gözden geçirilince kapanır. **Sınırlar:** referans, gözlemlenen veriye dayanır; izlenmeyen bir makinenin veya HTTP probe'u olmayan bir sitenin yüzeyi görünmez. Bu bir zafiyet tarayıcısı değildir.
 
+### Sapma ve referans yorumları
+
+Sapmalar ve Referans durum tablolarındaki **Yorum** sütunu her satır için üç şey söyler: **Ne oldu** (örn. "Yeni dinleyen port: 3306 (MySQL)"), **Neden önemli** (riskin açıklaması) ve **Ne yapılmalı** (önerilen çözüm). Yeni/kaybolan port, riskli port, yeni uç nokta, riskli yol (admin, debug, .env, swagger vb.), eski TLS sürümü ve sürüm değişimi, güvenlik başlığı kaybı, sunucu bilgisi (banner) değişimi ve 4xx tarama izi için ayrı yorumlar vardır. Referans durum satırı; referansa girmiş riskli port, eski TLS, hiç görülmeyen güvenlik başlığı ve veri eksikliği için uyarır (ilk gözlem referans sayıldığından bunlar sapma üretmez). Aynı yorumlar Asset kartı › Güvenlik sekmesinde ve Olaylar zaman çizelgesindeki "Sapma kaydı" satırlarında da görünür. Yorumlar kural tabanlıdır (sabit metin); yapay zeka çağrısı yapılmaz, çevrimdışı kurulumda da çalışır. Öneriler genel güvenlik tavsiyesidir, kurumunuzun değişiklik sürecinin yerine geçmez.
+
 ## Saldırı yüzeyi › Envanter
 
 Sapmalar sekmesinin yanındaki **Envanter** sekmesi, makinelerde **ajanın** topladığı bilgiyi gösterir (ajan v1.6.0+; Ajanlar sayfasında "Saldırı yüzeyi envanteri" veri türü açık olmalıdır, `SEND_INVENTORY`). Ajan 30 dakikada bir (`APM_INVENTORY_EVERY`, saniye) şunları gönderir:
@@ -457,7 +461,7 @@ Alarm metrikleri: `inventory.eol_count`, `inventory.vuln_critical`, `inventory.v
 
 | Sekme | İçerik |
 |---|---|
-| **Genel** | Kısa değerlendirme (Yorum), özet kutuları (bağımlılık, etkilenen, dinleyen servis, zafiyet, saldırı yüzeyi, SLA), tanım alanları (IP adresleri, açık kalma süresi, yük, bellek, kurulu bağlantı), bağlı probe ve senaryolar |
+| **Genel** | Durum rozeti **Kritik / Uyarı / Sağlıklı** ve altında **Nedenler ve önerilen çözümler** tablosu: durumu etkileyen her etken (erişilemiyor, açık alarmlar, kritik/yüksek zafiyet, riskli açık port, destek dışı sürüm, saldırı yüzeyi sapması, hatalı probe/senaryo, SLA) ayrı satırda, nedeni ve önerilen çözümüyle; **Aç** düğmesi ilgili sekmeye götürür. Ardından özet kutuları (bağımlılık, etkilenen, dinleyen servis, zafiyet, saldırı yüzeyi, SLA), tanım alanları (IP adresleri, açık kalma süresi, yük, bellek, kurulu bağlantı), bağlı probe ve senaryolar |
 | **Yazılım envanteri** | Dinleyen portlar, süreç, çalışma zamanı sürümü ve destek durumu, zafiyetler, bağımlılıklar (Saldırı yüzeyi › Envanter ile aynı veri) ve ajanın süreç/uygulama listesi |
 | **Topoloji ve bağlantılar** | Bana bağımlı olanlar → asset → benim bağımlı olduklarım (kutuya tıklayınca o asset'in kartı), düşerse etkilenenler ve bağımlı olduğu zincir, ajanın gözlediği ağ bağlantıları (topolojide tanımlı olup olmadığı ile) |
 | **Performans** | Metrik eğilimleri (1 sa / 6 sa / 24 sa), uygulama istek/hata/p95 ve yorum, en yoğun uç noktalar, en çok zaman harcayan sorgular |
@@ -1010,6 +1014,7 @@ Docker'da `.env` dosyasına, RHEL'de `/etc/appmon/appmon.env` dosyasına yazıl�
 | v2.7.0 | SSH probe: toplanacak veri seçimi (swap, yük, çalışma süresi, bağlantı, port, IP), dizin filtresi ve Sunucu ayrıntısı penceresi |
 | v2.7.1 | Probe ayrıntıları: tüm probe türleri için son ölçümün ayrıntı penceresi (sertifika, DNS cevapları, HTTP başlıkları, ICMP istatistikleri, sıçramalar...) |
 | v3.7.0 | **Ölçek paketi 2:** Ajanlar sayfasında arama/süzgeç/sayfalama ve çoklu seçim (toplu veri ayarı ve güncelleme), kademeli (dalga dalga) ajan güncellemesi, Probe ve Senaryolarda çoklu seçim + toplu etkinleştir/durdur/aralık/sil, probe CSV içe aktarma, asset başına ingest oran sınırı |
+| v3.18.0 | **Ayrıntılı yorumlar:** Saldırı yüzeyi sapma ve referans satırlarında "ne oldu / neden önemli / ne yapılmalı"; Asset kartı › Genel'de Kritik/Uyarı nedenleri ve önerilen çözümler. |
 | v3.17.0 | **Pano widget'ları v2:** özet şerit + kareler + sağ detay paneli (yüzlerce probe'a ölçeklenir); SSL renkleri alarm kuralları ve açık alarmlara göre; eski "Sertifika süreleri (TLS)" widget'ı kaldırıldı. |
 | v3.16.0 | **Pano widget'ları:** SSL, DNS, NTP, TCP/UDP, ICMP, yol izleme ve veritabanı probe'larının tümünü gösteren görsel widget'lar ve "Ağ ve altyapı servisleri" şablonu. |
 | v3.15.0 | **Asset kartı:** asset'e tıklayınca Genel, Yazılım envanteri, Topoloji ve bağlantılar, Performans, Güvenlik ve Olaylar sekmeleriyle tek sayfa. |

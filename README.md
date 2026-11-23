@@ -653,6 +653,11 @@ Alarmlar sayfasının üstünde **Alarm panosu**: genel durum şeridi, sorunlu h
 - **Arayüz:** Ajanlar sayfasında "Antivirüs / EDR izinleri" uyarı bölümü (Windows ve Linux).
 - **Performans sayfası ajanla (aynı sürüm):** `dbstats` yükü (ajan `APM_PG_DSN` ile PostgreSQL `pg_stat_statements` okur; migration 042 `agent_db_state/agent_db_statements`; Performans › Veritabanı sorguları probe verisiyle birleşik), `conns.in` + giden özet → `agent_host_conns`/`host_addrs` (Performans › Bağlantılar), Performans › Uygulamalar'a trace giriş span'lerinden satırlar (`source: trace`). Yeni veri türü `SEND_DBSTATS`.
 
+## yama106 — Ayrıntılı yorumlar ve Asset kartı nedenleri (v3.18.0)
+
+- Saldırı yüzeyi › Sapmalar ve Referans durum, Asset kartı › Güvenlik ve Olaylar (Sapma kaydı) satırlarına kural tabanlı "ne oldu / neden önemli / ne yapılmalı" yorumu (`surfInsight`, `baseInsight`, `richCell`).
+- Asset kartı › Genel: Kritik/Uyarı rozetinin altında tüm nedenler ve önerilen çözümler tablosu (alarm, zafiyet, riskli port, destek dışı sürüm, sapma, probe/senaryo hatası, SLA; ilgili sekmeye bağlantı). Yalnızca arayüz değişikliği.
+
 ## yama105 — Pano widget'ları: özet şerit, kareler, detay paneli; SSL alarm renkleri (v3.17.0)
 
 - Ağ ve altyapı widget'ları (SSL, DNS, NTP, TCP/UDP, ICMP, yol izleme, veritabanı) ortak `fleet()` bileşenine taşındı: üstte özet şerit (dilime tıklayınca süzer), her probe için küçük kare (50-500 probe sığar), kareye veya "Listeyi aç"a tıklayınca sağdan detay paneli (`sidePanel`). Hâlâ tüm probe'ları kapsar.
